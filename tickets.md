@@ -47,13 +47,13 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 - ✅ `FMIndex::find_all()` - get all positions
 - ✅ `OccTable::occ()` - efficient rank queries
 
-### ⬜ T6: Index I/O
-**Status:** Pending
+### ✅ T6: Index I/O
+**Status:** Complete
 **Description:** Save/load FM-index to disk with memory mapping.
 **Deliverables:**
-- [ ] `FMIndex::save(path)`
-- [ ] `FMIndex::load(path)` with memory-mapped files
-- [ ] Index file format with magic header
+- [x] `FMIndex::save(path)`
+- [x] `FMIndex::load(path)` with memory-mapped files
+- [x] Index file format with magic header
 
 ---
 
@@ -214,9 +214,9 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 14 |
+| ✅ Complete | 15 |
 | 🟡 Partial | 3 |
-| ⬜ Pending | 7 |
+| ⬜ Pending | 6 |
 | **Total** | **24** |
 
 ---

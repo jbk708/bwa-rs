@@ -1,6 +1,15 @@
 //! FM-Index implementation for fast substring search.
 
+use std::path::Path;
+use std::io::{Read, Write};
+use std::fs::File;
+use std::io;
+
+use crate::error::BwaError;
 use crate::reference::Reference;
+
+const MAGIC: &[u8; 6] = b"BWAIDX";
+const VERSION: u8 = 1;
 
 #[derive(Clone, Debug)]
 pub struct SuffixArray {
@@ -24,6 +33,27 @@ impl SuffixArray {
 
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
+        for &idx in &self.sa {
+            writer.write_all(&idx.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    fn read_from(reader: &mut impl Read, count: usize) -> io::Result<Self> {
+        let mut sa = Vec::with_capacity(count);
+        for _ in 0..count {
+            let mut bytes = [0u8; 4];
+            reader.read_exact(&mut bytes)?;
+            sa.push(u32::from_le_bytes(bytes));
+        }
+        Ok(Self { sa, len: count })
     }
 }
 
@@ -57,8 +87,22 @@ impl BWT {
         self.len
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     pub fn get(&self, idx: usize) -> u8 {
         self.bwt[idx]
+    }
+
+    fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
+        writer.write_all(&self.bwt)
+    }
+
+    fn read_from(reader: &mut impl Read, len: usize) -> io::Result<Self> {
+        let mut bwt = vec![0u8; len];
+        reader.read_exact(&mut bwt)?;
+        Ok(Self { bwt, len })
     }
 }
 
@@ -103,6 +147,30 @@ impl OccTable {
         }
 
         total[c as usize]
+    }
+
+    fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
+        for count in &self.counts {
+            for &c in count {
+                writer.write_all(&c.to_le_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
+    fn read_from(reader: &mut impl Read, sample_rate: usize, bwt_len: usize) -> io::Result<Self> {
+        let count_len = bwt_len.div_ceil(sample_rate);
+        let mut counts = Vec::with_capacity(count_len);
+        for _ in 0..count_len {
+            let mut count = [0u32; 5];
+            for c in &mut count {
+                let mut bytes = [0u8; 4];
+                reader.read_exact(&mut bytes)?;
+                *c = u32::from_le_bytes(bytes);
+            }
+            counts.push(count);
+        }
+        Ok(Self { counts, sample_rate })
     }
 }
 
@@ -175,11 +243,77 @@ impl FMIndex {
             .filter_map(|i| self.sa.get(i))
             .collect()
     }
+
+    pub fn save(&self, path: &Path) -> Result<(), BwaError> {
+        let mut file = File::create(path)?;
+
+        file.write_all(MAGIC)?;
+        file.write_all(&[VERSION])?;
+        file.write_all(&(self.len as u32).to_le_bytes())?;
+        file.write_all(&(self.occ.sample_rate as u32).to_le_bytes())?;
+
+        for &fc in &self.f_column {
+            file.write_all(&fc.to_le_bytes())?;
+        }
+
+        self.bwt.write_to(&mut file)?;
+        self.sa.write_to(&mut file)?;
+        self.occ.write_to(&mut file)?;
+
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Self, BwaError> {
+        let mut file = File::open(path)?;
+
+        let mut magic = [0u8; 6];
+        file.read_exact(&mut magic)?;
+        if &magic != MAGIC {
+            return Err(BwaError::Index("Invalid index file: bad magic".into()));
+        }
+
+        let mut version = [0u8; 1];
+        file.read_exact(&mut version)?;
+        if version[0] != VERSION {
+            return Err(BwaError::Index(format!(
+                "Unsupported index version: expected {}, got {}",
+                VERSION, version[0]
+            )));
+        }
+
+        let mut len_bytes = [0u8; 4];
+        file.read_exact(&mut len_bytes)?;
+        let len = u32::from_le_bytes(len_bytes) as usize;
+
+        let mut rate_bytes = [0u8; 4];
+        file.read_exact(&mut rate_bytes)?;
+        let sample_rate = u32::from_le_bytes(rate_bytes) as usize;
+
+        let mut f_column = [0u32; 5];
+        for fc in &mut f_column {
+            let mut bytes = [0u8; 4];
+            file.read_exact(&mut bytes)?;
+            *fc = u32::from_le_bytes(bytes);
+        }
+
+        let bwt = BWT::read_from(&mut file, len)?;
+        let sa = SuffixArray::read_from(&mut file, len)?;
+        let occ = OccTable::read_from(&mut file, sample_rate, len)?;
+
+        Ok(Self {
+            bwt,
+            sa,
+            occ,
+            f_column,
+            len,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn test_suffix_array() {
@@ -208,5 +342,80 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGT").unwrap();
         let index = FMIndex::build(&ref_seq);
         assert_eq!(index.len, 4);
+    }
+
+    #[test]
+    fn test_save_load_roundtrip() {
+        let reference = Reference::parse_fasta(">test\nACGTACGT").unwrap();
+        let original = FMIndex::build(&reference);
+
+        let pattern = [0, 1, 2, 3];
+        let original_positions = original.find_all(&pattern);
+
+        let temp_path = std::env::temp_dir().join("test_index.idx");
+        original.save(&temp_path).unwrap();
+
+        let loaded = FMIndex::load(&temp_path).unwrap();
+        let loaded_positions = loaded.find_all(&pattern);
+
+        assert_eq!(original_positions, loaded_positions);
+        assert_eq!(original.len, loaded.len);
+
+        std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_save_load_large() {
+        let seq = b"ACGT".repeat(1000);
+        let reference = Reference::parse_fasta(&(">test\n".to_string() + &String::from_utf8(seq).unwrap())).unwrap();
+        let original = FMIndex::build(&reference);
+
+        let pattern = [0, 1, 2];
+        let original_count = original.count(&pattern);
+
+        let temp_path = std::env::temp_dir().join("test_large_index.idx");
+        original.save(&temp_path).unwrap();
+
+        let loaded = FMIndex::load(&temp_path).unwrap();
+
+        assert_eq!(original_count, loaded.count(&pattern));
+        assert_eq!(original.len, loaded.len);
+
+        std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_load_invalid_magic() {
+        let temp_path = std::env::temp_dir().join("test_invalid.idx");
+        std::fs::write(&temp_path, b"INVALID").ok();
+
+        let result = FMIndex::load(&temp_path);
+        assert!(result.is_err());
+
+        std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_load_invalid_version() {
+        let temp_path = std::env::temp_dir().join("test_bad_version.idx");
+        let mut file = std::fs::File::create(&temp_path).unwrap();
+        file.write_all(b"BWAIDX").unwrap();
+        file.write_all(&[99u8]).unwrap();
+
+        let result = FMIndex::load(&temp_path);
+        assert!(result.is_err());
+
+        std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_load_corrupted() {
+        let temp_path = std::env::temp_dir().join("test_corrupt.idx");
+        std::fs::write(&temp_path, b"BWAIDX\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00").ok();
+
+        let result = FMIndex::load(&temp_path);
+        assert!(result.is_err());
+
+        std::fs::remove_file(temp_path).ok();
     }
 }
