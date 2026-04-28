@@ -9,11 +9,12 @@
 
 ## Workflow (One Ticket Per PR)
 
-1. **Plan** - Read ticket, outline types/functions/tests, get approval
-2. **Tests** - Write failing tests first, define expected behavior
-3. **Implement** - Minimum code to pass tests
-4. **Simplify** - `cargo clippy --fix`, no warnings, `cargo test` passes
-5. **PR** - Title: `T{N}: {Title}`, copy ticket description
+1. **Branch** - Create feature branch: `git checkout -b t{N}-short-description`
+2. **Plan** - Read ticket, outline types/functions/tests, get approval
+3. **Tests** - Write failing tests first, define expected behavior
+4. **Implement** - Minimum code to pass tests
+5. **Simplify** - `cargo clippy --fix`, no warnings, `cargo test` passes
+6. **PR** - Create PR: `gh pr create --title "T{N}: {Title}" --body "..."`
 
 ## Formats
 
