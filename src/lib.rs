@@ -1,0 +1,44 @@
+//! Pure Rust BWA-MEM implementation for genomic alignment.
+//!
+//! This crate provides a complete implementation of the BWA-MEM algorithm
+//! for aligning sequencing reads to a reference genome.
+//!
+//! # Features
+//!
+//! - Pure Rust implementation (no C dependencies)
+//! - FM-Index for fast substring search
+//! - MEM (Maximal Exact Match) seeding
+//! - Smith-Waterman alignment extension
+//! - Paired-end read alignment
+//! - SAM format output
+//!
+//! # Example
+//!
+//! ```ignore
+//! use bwa_mem::{Reference, FMIndex, Aligner};
+//!
+//! // Load reference and build index
+//! let reference = Reference::from_fasta("genome.fa")?;
+//! let index = FMIndex::build(&reference);
+//!
+//! // Align reads
+//! let aligner = Aligner::new(index);
+//! // Note: queries must be 2-bit encoded sequences
+//! let results = aligner.align_read(&[0, 1, 2, 3, 0, 1, 2, 3], None)?;
+//! ```
+
+pub mod error;
+pub mod types;
+pub mod reference;
+pub mod fm_index;
+pub mod seed;
+pub mod alignment;
+pub mod chaining;
+pub mod sam;
+pub mod paired;
+
+pub use error::BwaError;
+pub use types::*;
+pub use reference::Reference;
+pub use fm_index::FMIndex;
+pub use alignment::Aligner;

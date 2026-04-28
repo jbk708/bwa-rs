@@ -1,0 +1,13 @@
+/target
+Cargo.lock
+*.idx
+*.bwt
+*.sa
+*.fa.*
+*.fasta.*
+index*
+*.pdb
+.DS_Store
+*.swp
+*.swo
+*~

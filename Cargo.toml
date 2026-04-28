@@ -1,0 +1,21 @@
+[package]
+name = "bwa-mem"
+version = "0.1.0"
+edition = "2021"
+description = "Pure Rust BWA-MEM implementation for genomic alignment"
+license = "MIT"
+repository = "https://github.com/USER/bwa-mem"
+authors = ["Your Name <you@example.com>"]
+rust-version = "1.75"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+thiserror = "1"
+memmap2 = "0.9"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = 3
+lto = true
