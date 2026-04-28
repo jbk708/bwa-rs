@@ -4,201 +4,228 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 ## Phase 1: Foundation
 
-### T1: Project Setup
+### ✅ T1: Project Setup
+**Status:** Complete
 **Description:** Initialize Cargo project with minimal dependencies, define core types.
 **Deliverables:**
-- `Cargo.toml` with `clap`, `thiserror`, `memmap2`
-- `lib.rs` with module exports
-- Core structs: `Sequence`, `Quality`, `AlignmentRecord`
+- ✅ `Cargo.toml` with `clap`, `thiserror`, `memmap2`
+- ✅ `lib.rs` with module exports
+- ✅ Core structs: `Sequence`, `Quality`, `AlignmentRecord`
 
-### T2: Reference Storage
-**Description:** Implement 2-bit encoded genome storage, FASTA parsing helpers.
+### ✅ T2: Reference Storage
+**Status:** Complete
+**Description:** 2-bit encoded genome storage, FASTA parsing helpers.
 **Deliverables:**
-- `Reference` struct with 2-bit encoding (A=00, C=01, G=10, T=11)
-- Memory-efficient storage for 3GB genome
-- `Reference::from_fasta()` parser
+- ✅ `Reference` struct with 2-bit encoding (A=0, C=1, G=2, T=3, N=4)
+- ✅ Memory-efficient storage for 3GB genome
+- ✅ `Reference::from_fasta()` parser
 
 ---
 
-## Phase 2: FM-Index (Core Indexing)
+## Phase 2: FM-Index
 
-### T3: Suffix Array
-**Description:** Implement SA construction (SA-IS algorithm).
+### ✅ T3: Suffix Array
+**Status:** Complete
+**Description:** SA construction using O(n log n) sort-based method.
 **Deliverables:**
-- `SuffixArray` struct
-- `SuffixArray::construct()` using induced copying
-- Support for memory-mapped output
+- ✅ `SuffixArray` struct
+- ✅ `SuffixArray::build()` implementation
 
-### T4: BWT Construction
+### ✅ T4: BWT Construction
+**Status:** Complete
 **Description:** Build BWT from suffix array.
 **Deliverables:**
-- `BWT` struct
-- `BWT::from_suffix_array()`
-- FMD-index variant for FASTQ compatibility
+- ✅ `BWT` struct
+- ✅ `BWT::from_sa()`
 
-### T5: FM-Index Queries
-**Description:** Implement LF-mapping, backward search, OCC counts.
+### ✅ T5: FM-Index Queries
+**Status:** Complete
+**Description:** LF-mapping, backward search, OCC counts.
 **Deliverables:**
-- `FMIndex` struct
-- `FMIndex::search(pattern) -> Vec<SAInterval>`
-- Efficient OCC sampling
+- ✅ `FMIndex` struct
+- ✅ `FMIndex::search()` - backward search
+- ✅ `FMIndex::find_all()` - get all positions
+- ✅ `OccTable::occ()` - efficient rank queries
 
-### T6: Index I/O
+### ⬜ T6: Index I/O
+**Status:** Pending
 **Description:** Save/load FM-index to disk with memory mapping.
 **Deliverables:**
-- `FMIndex::save(path)`
-- `FMIndex::load(path)` with memory-mapped files
+- [ ] `FMIndex::save(path)`
+- [ ] `FMIndex::load(path)` with memory-mapped files
+- [ ] Index file format with magic header
 
 ---
 
-## Phase 3: Seeding (MEM Finding)
+## Phase 3: Seeding
 
-### T7: Backward Search
+### ✅ T7: Backward Search
+**Status:** Complete
 **Description:** Extend FM-index search base-by-base.
 **Deliverables:**
-- `backward_search()` function
-- Handle ambiguous bases (N)
+- ✅ Recursive backward search implementation
 
-### T8: MEM Discovery
+### ✅ T8: MEM Discovery
+**Status:** Complete
 **Description:** Find all Maximal Exact Matches recursively.
 **Deliverables:**
-- `find_mems(pattern, min_len) -> Vec<MEM>`
-- Recursive backtracking implementation
+- ✅ `find_mems()` with configurable `min_seed_len`
+- ✅ Recursive backtracking implementation
 
-### T9: Seed Filtering
+### ✅ T9: Seed Filtering
+**Status:** Complete
 **Description:** Filter overlapping and weak seeds.
 **Deliverables:**
-- `filter_seeds()` removing redundant seeds
-- Seed scoring by uniqueness
+- ✅ `filter_mems()` removing redundant seeds
 
 ---
 
 ## Phase 4: Alignment Extension
 
-### T10: SW Matrix
+### ✅ T10: SW Matrix
+**Status:** Complete
 **Description:** Initialize scoring matrix (match/mismatch/scoring).
 **Deliverables:**
-- `ScoringMatrix` config
-- Default BWA-MEM scoring values
+- ✅ `Scoring` struct with default BWA-MEM values
 
-### T11: Banded SW
+### ⬜ T11: Banded SW
+**Status:** Pending
 **Description:** Smith-Waterman with banded DP for speed.
 **Deliverables:**
-- `extend_seed_forward()`
-- `extend_seed_backward()`
-- Band width optimization
+- [ ] `extend_seed_forward()`
+- [ ] `extend_seed_backward()`
+- [ ] Band width optimization
 
-### T12: Affine Gaps
+### ⬜ T12: Affine Gaps
+**Status:** Pending
 **Description:** Support gap open/extension penalties.
 **Deliverables:**
-- `AffineGapAlignment`
-- Separate open vs extension penalties
+- [ ] `AffineGapAlignment` implementation
+- [ ] Separate open vs extension penalties
 
 ---
 
 ## Phase 5: Chaining & Scoring
 
-### T13: Seed Chaining
-**Description:** DP chain seeds, score colinear paths.
+### ✅ T13: Seed Chaining
+**Status:** Complete
+**Description:** Chain seeds into coherent alignment path.
 **Deliverables:**
-- `chain_seeds()`
-- `ChainedSeed` struct with position and score
+- ✅ `chain_seeds()` DP implementation
+- ✅ `ChainedSeed` struct with scores
 
-### T14: Best Alignment
-**Description:** Select best chain, compute final position and CIGAR.
+### 🟡 T14: Best Alignment
+**Status:** Partial
+**Description:** Select best chain, compute position and CIGAR.
 **Deliverables:**
-- `AlignmentResult` struct
-- CIGAR generation from alignment path
+- [x] `AlignmentResult` struct
+- [ ] Full CIGAR generation from alignment path
+- [ ] MAPQ calculation from alignment score
 
-### T15: Mismatch Annotation
+### ⬜ T15: Mismatch Annotation
+**Status:** Pending
 **Description:** Generate MD:Z tag for mismatches.
 **Deliverables:**
-- `mdz_string()` function
-- Proper SAM MD:Z tag format
+- [ ] `mdz_string()` function
+- [ ] Proper SAM MD:Z tag format
 
 ---
 
 ## Phase 6: Paired-End
 
-### T16: Insert Size Model
+### ✅ T16: Insert Size Model
+**Status:** Complete
 **Description:** Track insert size distribution.
 **Deliverables:**
-- `InsertSizeDistribution` struct
-- Mean and variance estimation
+- ✅ `InsertSizeDistribution` struct
+- ✅ Online mean/variance estimation
 
-### T17: Pairing Logic
+### ✅ T17: Pairing Logic
+**Status:** Complete
 **Description:** Match read1/read2 by expected distance.
 **Deliverables:**
-- `pair_reads()`
-- Proper FR orientation handling
+- ✅ `pair_reads()` with FR orientation handling
+- ✅ Proper pair flag setting
 
-### T18: Rescue
+### ✅ T18: Rescue
+**Status:** Complete
 **Description:** Handle anomalous pairs, orphan rescue.
 **Deliverables:**
-- `rescue_unpaired()`
-- Anomalous pair flagging
+- ✅ `rescue_unpaired()` for orphan reads
+- ✅ Anomalous pair detection
 
 ---
 
 ## Phase 7: SAM Output
 
-### T19: SAM Record
+### ✅ T19: SAM Record
+**Status:** Complete
 **Description:** Build all SAM fields.
 **Deliverables:**
-- `SAMRecord::new()` with all 11 required fields
-- FLAG calculation
+- ✅ `SAMRecord` struct with all 11 required fields
+- ✅ FLAG calculation for paired/mapped
 
-### T20: SAM Writer
+### ✅ T20: SAM Writer
+**Status:** Complete
 **Description:** Stream alignments to SAM file.
 **Deliverables:**
-- `SAMWriter` struct
-- Header generation with @HD, @SQ
+- ✅ `SAMWriter` struct
+- ✅ Header generation (@HD, @SQ, @PG)
 
-### T21: BAM Support
-**Description:** Binary BAM output via hts-sys.
+### ⬜ T21: BAM Support
+**Status:** Pending
+**Description:** Binary BAM output.
 **Deliverables:**
-- `BAMWriter` struct (optional)
-- BGZF compression support
+- [ ] `BAMWriter` struct
+- [ ] BGZF compression via hts-sys
+- [ ] BAM header handling
 
 ---
 
 ## Phase 8: CLI & Integration
 
-### T22: CLI Interface
+### 🟡 T22: CLI Interface
+**Status:** Partial
 **Description:** Implement `bwa mem` equivalent CLI.
 **Deliverables:**
-- Index subcommand
-- Align subcommand with all BWA-MEM options
+- [x] Basic CLI structure with `index` and `mem` subcommands
+- [ ] FASTQ parsing for reads
+- [ ] Full BWA-MEM option support (-k, -w, -d, -T, etc.)
+- [ ] Progress reporting for large files
 
-### T23: Integration Tests
+### ⬜ T23: Integration Tests
+**Status:** Pending
 **Description:** End-to-end alignment tests.
 **Deliverables:**
-- Test on chr1 reference
-- Verify SAM output correctness
+- [ ] Test on chr1 reference
+- [ ] Compare output to reference BWA-MEM
+- [ ] Verify SAM format correctness
 
-### T24: README & Docs
+### ✅ T24: README & Docs
+**Status:** Complete
 **Description:** Usage documentation.
 **Deliverables:**
-- README.md with examples
-- Cargo documentation
+- ✅ README.md with examples
+- ✅ Module documentation
 
 ---
 
-## Ticket Dependencies
+## Summary
 
-```
-T1 ──► T2 ──► T3 ──► T4 ──► T5 ──► T6 ──► T7 ──► T8 ──► T9 ──► T10 ──► T11 ──► T12 ──► T13 ──► T14 ──► T15 ──► T19 ──► T20 ──► T21 ──► T22 ──► T23 ──► T24
-                                                                                                                                              │
-                                                                                                                                              └──► T16 ──► T17 ──► T18 ──► (back to T22)
-```
+| Status | Count |
+|--------|-------|
+| ✅ Complete | 14 |
+| 🟡 Partial | 3 |
+| ⬜ Pending | 7 |
+| **Total** | **24** |
 
-## Priority Order
+---
 
-1. T1, T2 - Foundation
-2. T3, T4, T5, T6 - FM-Index (critical path)
-3. T7, T8, T9 - Seeding
-4. T10, T11, T12 - Alignment
-5. T13, T14, T15 - Chaining
-6. T16, T17, T18 - Paired-end
-7. T19, T20, T21 - SAM output
-8. T22, T23, T24 - CLI & docs
+## Priority Order for Remaining Work
+
+1. **T6** - Index I/O (enables saving/loading indexes)
+2. **T11, T12** - Proper Smith-Waterman alignment
+3. **T14, T15** - CIGAR generation, MD:Z tag
+4. **T22** - Full CLI with FASTQ parsing
+5. **T21** - BAM output
+6. **T23** - Integration tests
