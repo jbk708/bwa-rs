@@ -30,6 +30,7 @@
 pub mod error;
 pub mod types;
 pub mod reference;
+pub mod sa;
 pub mod fm_index;
 pub mod seed;
 pub mod alignment;
@@ -42,5 +43,6 @@ pub mod fastq;
 pub use error::BwaError;
 pub use types::*;
 pub use reference::Reference;
+pub use sa::SuffixArray;
 pub use fm_index::FMIndex;
 pub use alignment::Aligner;

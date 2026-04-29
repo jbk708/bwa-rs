@@ -13,6 +13,7 @@ clap = { version = "4", features = ["derive"] }
 thiserror = "1"
 memmap2 = "0.9"
 flate2 = "1"
+sa-is = "0.1.0"
 
 [lints.rust]
 unsafe_code = "forbid"

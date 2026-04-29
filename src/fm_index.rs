@@ -7,55 +7,10 @@ use std::io;
 
 use crate::error::BwaError;
 use crate::reference::Reference;
+use crate::sa::SuffixArray;
 
 const MAGIC: &[u8; 6] = b"BWAIDX";
-const VERSION: u8 = 1;
-
-#[derive(Clone, Debug)]
-pub struct SuffixArray {
-    sa: Vec<u32>,
-    len: usize,
-}
-
-impl SuffixArray {
-    pub fn build(sequence: &[u8]) -> Self {
-        let len = sequence.len();
-        let mut indices: Vec<u32> = (0..len as u32).collect();
-        indices.sort_by(|&a, &b| {
-            sequence[a as usize..].cmp(&sequence[b as usize..])
-        });
-        Self { sa: indices, len }
-    }
-
-    pub fn get(&self, idx: usize) -> Option<u32> {
-        self.sa.get(idx).copied()
-    }
-
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
-        for &idx in &self.sa {
-            writer.write_all(&idx.to_le_bytes())?;
-        }
-        Ok(())
-    }
-
-    fn read_from(reader: &mut impl Read, count: usize) -> io::Result<Self> {
-        let mut sa = Vec::with_capacity(count);
-        for _ in 0..count {
-            let mut bytes = [0u8; 4];
-            reader.read_exact(&mut bytes)?;
-            sa.push(u32::from_le_bytes(bytes));
-        }
-        Ok(Self { sa, len: count })
-    }
-}
+const VERSION: u8 = 2;
 
 #[derive(Clone, Debug)]
 pub struct BWT {
