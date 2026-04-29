@@ -3,6 +3,16 @@
 use std::fmt;
 use std::fmt::Display;
 
+fn decode_base(base: u8) -> char {
+    match base {
+        0 => 'A',
+        1 => 'C',
+        2 => 'G',
+        3 => 'T',
+        _ => 'N',
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sequence {
     pub name: String,
@@ -221,6 +231,68 @@ impl AlignmentResult {
             md_tag: None,
         }
     }
+
+    pub fn mdz_string(&self, read: &[u8], reference: &[u8]) -> String {
+        let mut result = String::new();
+        let mut q_pos = 0usize;
+        let mut r_pos = self.position;
+        let mut match_count = 0usize;
+
+        for (op, len) in &self.cigar.ops {
+            match op {
+                CigarOp::Eq | CigarOp::X | CigarOp::M => {
+                    for i in 0..*len as usize {
+                        let q_idx = q_pos + i;
+                        let r_idx = r_pos + i;
+
+                        if q_idx >= read.len() || r_idx >= reference.len() {
+                            continue;
+                        }
+
+                        if read[q_idx] == reference[r_idx] {
+                            match_count += 1;
+                        } else {
+                            if match_count > 0 {
+                                result.push_str(&match_count.to_string());
+                                match_count = 0;
+                            }
+                            result.push(decode_base(reference[r_idx]));
+                        }
+                    }
+                    q_pos += *len as usize;
+                    r_pos += *len as usize;
+                }
+                CigarOp::D => {
+                    if match_count > 0 {
+                        result.push_str(&match_count.to_string());
+                        match_count = 0;
+                    }
+                    result.push('^');
+                    for i in 0..*len as usize {
+                        let r_idx = r_pos + i;
+                        if r_idx < reference.len() {
+                            result.push(decode_base(reference[r_idx]));
+                        }
+                    }
+                    r_pos += *len as usize;
+                }
+                CigarOp::I => {
+                    q_pos += *len as usize;
+                }
+                _ => {}
+            }
+        }
+
+        if match_count > 0 {
+            result.push_str(&match_count.to_string());
+        }
+
+        if result.is_empty() {
+            result.push('0');
+        }
+
+        result
+    }
 }
 
 #[cfg(test)]
@@ -249,5 +321,142 @@ mod tests {
         let mem = MEM::new(5, 100, 20);
         assert_eq!(mem.query_end(), 25);
         assert_eq!(mem.ref_end(), 120);
+    }
+
+    #[test]
+    fn test_mdz_perfect_match() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 5);
+        let result = AlignmentResult {
+            position: 0,
+            mapq: 60,
+            cigar,
+            flag: 0,
+            reverse_strand: false,
+            nm: 0,
+            score: 5,
+        };
+
+        let read = vec![0, 1, 2, 3, 0];
+        let reference = vec![0, 1, 2, 3, 0];
+        let mdz = result.mdz_string(&read, &reference);
+        assert_eq!(mdz, "5");
+    }
+
+    #[test]
+    fn test_mdz_single_mismatch() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 3);
+        cigar.push(CigarOp::X, 2);
+        let result = AlignmentResult {
+            position: 0,
+            mapq: 60,
+            cigar,
+            flag: 0,
+            reverse_strand: false,
+            nm: 2,
+            score: 3,
+        };
+
+        let read = vec![0, 1, 2, 1, 2]; // A, C, G, C, G
+        let reference = vec![0, 1, 2, 3, 2]; // A, C, G, T, G
+        let mdz = result.mdz_string(&read, &reference);
+        assert_eq!(mdz, "3T1");
+    }
+
+    #[test]
+    fn test_mdz_deletion() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 2);
+        cigar.push(CigarOp::D, 2);
+        cigar.push(CigarOp::Eq, 2);
+        let result = AlignmentResult {
+            position: 0,
+            mapq: 60,
+            cigar,
+            flag: 0,
+            reverse_strand: false,
+            nm: 2,
+            score: 4,
+        };
+
+        // CIGAR: 2= 2D 2=
+        // Read: A C _ _ T A (read[0,1] match, read[2,3] match after deletion)
+        // Ref:  A C G T T A (ref[2,3]=GT deleted, ref[4,5]=TA match read[2,3])
+        let read = vec![0, 1, 3, 0]; // ACTA
+        let reference = vec![0, 1, 2, 3, 3, 0]; // ACGTTA encoding: A=0,C=1,G=2,T=3,T=3,A=0
+        let mdz = result.mdz_string(&read, &reference);
+        assert_eq!(mdz, "2^GT2");
+    }
+
+    #[test]
+    fn test_mdz_mixed() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 2);
+        cigar.push(CigarOp::X, 1);
+        cigar.push(CigarOp::Eq, 2);
+        cigar.push(CigarOp::D, 1);
+        let result = AlignmentResult {
+            position: 0,
+            mapq: 60,
+            cigar,
+            flag: 0,
+            reverse_strand: false,
+            nm: 3,
+            score: 6,
+        };
+
+        // CIGAR: 2= 1X 2= 1D
+        // Read: A C G T A (length 5)
+        // Ref:  A C T T A C (ref[2]=T mismatch, ref[3,4]=TA match, ref[5]=C del)
+        let read = vec![0, 1, 2, 3, 0]; // ACGTA
+        let reference = vec![0, 1, 3, 3, 0, 1]; // ACTTAC encoding: A=0,C=1,T=3,T=3,A=0,C=1
+        // After 2=: ref[0,1]=AC match, q_pos=2, r_pos=2
+        // 1X: ref[2]=T vs G mismatch, q_pos=3, r_pos=3
+        // 2=: ref[3,4]=TA match, q_pos=5, r_pos=5
+        // 1D: ref[5]=C deleted, r_pos=6
+        let mdz = result.mdz_string(&read, &reference);
+        assert_eq!(mdz, "2T2^C");
+    }
+
+    #[test]
+    fn test_mdz_insertion() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 5);
+        let result = AlignmentResult {
+            position: 0,
+            mapq: 60,
+            cigar,
+            flag: 0,
+            reverse_strand: false,
+            nm: 0,
+            score: 6,
+        };
+
+        // 5= means 5 matches against reference
+        let read = vec![0, 1, 2, 3, 0]; // ACGTA
+        let reference = vec![0, 1, 2, 3, 0, 1]; // ACGTAC
+        let mdz = result.mdz_string(&read, &reference);
+        assert_eq!(mdz, "5");
+    }
+
+    #[test]
+    fn test_mdz_no_match() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::X, 3);
+        let result = AlignmentResult {
+            position: 0,
+            mapq: 60,
+            cigar,
+            flag: 0,
+            reverse_strand: false,
+            nm: 3,
+            score: -12,
+        };
+
+        let read = vec![0, 1, 2]; // ACG
+        let reference = vec![3, 2, 1]; // TGC
+        let mdz = result.mdz_string(&read, &reference);
+        assert_eq!(mdz, "TGC");
     }
 }
