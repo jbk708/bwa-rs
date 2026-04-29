@@ -1,7 +1,6 @@
 //! Core types for sequence representation and alignment records.
 
-use std::fmt;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 
 fn decode_base(base: u8) -> char {
     match base {

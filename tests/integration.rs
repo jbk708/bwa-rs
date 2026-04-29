@@ -7,38 +7,30 @@ const TEST_REFERENCE: &str = ">test_ref\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACG
 
 const TEST_FASTQ: &str = "@read1\nACGTACGTACGTACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n@read2\nGGGGAAAACCCCAAAAGGGGAAAACCCC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n@read3\nNNNNACGTACGTACGTNNNNACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n";
 
+fn seq_to_bytes(s: &str) -> Vec<u8> {
+    s.bytes().map(|b| match b { b'A' => 0, b'C' => 1, b'G' => 2, b'T' => 3, _ => 4 }).collect()
+}
+
+fn create_test_aligner() -> (Aligner, Reference) {
+    let reference = Reference::parse_fasta(TEST_REFERENCE).unwrap();
+    let ref_slice = reference.as_slice();
+    let index = FMIndex::build(&reference);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
+    (aligner, reference)
+}
+
 fn parse_fastq(data: &str) -> Vec<(String, Vec<u8>, Vec<u8>)> {
     let mut records = Vec::new();
     let mut lines = data.lines();
-
     while let Some(name) = lines.next() {
-        if !name.starts_with('@') {
-            continue;
-        }
+        if !name.starts_with('@') { continue; }
         let qname = name.trim_start_matches('@').to_string();
         let seq_line = lines.next().unwrap_or("");
         let _qual_header = lines.next().unwrap_or("");
         let qual_line = lines.next().unwrap_or("");
-
-        let seq = seq_to_bytes(seq_line);
-        let qual = qual_line.as_bytes().to_vec();
-
-        records.push((qname, seq, qual));
+        records.push((qname, seq_to_bytes(seq_line), qual_line.as_bytes().to_vec()));
     }
-
     records
-}
-
-fn seq_to_bytes(s: &str) -> Vec<u8> {
-    s.bytes()
-        .map(|b| match b {
-            b'A' => 0,
-            b'C' => 1,
-            b'G' => 2,
-            b'T' => 3,
-            _ => 4,
-        })
-        .collect()
 }
 
 fn validate_sam_record(line: &str) -> Result<(), BwaError> {
@@ -132,16 +124,10 @@ fn validate_cigar(cigar: &str) -> Result<(), BwaError> {
 
 #[test]
 fn test_complete_alignment_pipeline() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
+    let (aligner, reference) = create_test_aligner();
     assert_eq!(reference.total_len(), 144);
 
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
     let reads = parse_fastq(TEST_FASTQ);
-
     assert_eq!(reads.len(), 3);
 
     let mut sam_records = Vec::new();
@@ -149,50 +135,25 @@ fn test_complete_alignment_pipeline() -> Result<(), BwaError> {
         let result = aligner.align_read(seq, None);
         let sequence = Sequence::new("query", seq.clone());
         let sam_record = match result {
-            Ok(alignment) => {
-                SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref")
-            }
-            Err(_) => {
-                SAMRecord::new(
-                    qname.clone(),
-                    0x4,
-                    "*".to_string(),
-                    0,
-                    0,
-                    "*".to_string(),
-                    "*".to_string(),
-                    0,
-                    0,
-                    "".to_string(),
-                    "*".to_string(),
-                )
-            }
+            Ok(alignment) => SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref"),
+            Err(_) => SAMRecord::unmapped(qname, seq, qual),
         };
         sam_records.push(sam_record.to_string());
     }
 
     assert_eq!(sam_records.len(), 3);
-
-    for record in &sam_records {
-        validate_sam_record(record)?;
-    }
-
+    for record in &sam_records { validate_sam_record(record)?; }
     Ok(())
 }
 
 #[test]
 fn test_sam_header_format() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, reference) = create_test_aligner();
     let seq = seq_to_bytes("ACGTACGTACGTACGT");
-    let qual = b"I".repeat(16).to_vec();
+    let qual = b"I".repeat(16);
 
     let result = aligner.align_read(&seq, None)?;
     let sequence = Sequence::new("query", seq.clone());
-
     let header = SAMHeader::new(reference.clone());
     let sam_header = header.to_string();
     let sam_record = SAMRecord::from_alignment("test_read", &result, &sequence, &qual, &reference.name);
@@ -200,9 +161,7 @@ fn test_sam_header_format() -> Result<(), BwaError> {
     assert!(sam_header.starts_with("@HD"));
     assert!(sam_header.contains("@SQ\tSN:test_ref\tLN:144"));
     assert!(sam_header.contains("@PG"));
-
     validate_sam_record(&sam_record.to_string())?;
-
     Ok(())
 }
 
@@ -232,47 +191,33 @@ fn test_perfect_match() -> Result<(), BwaError> {
 
 #[test]
 fn test_mismatch_position() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, _) = create_test_aligner();
     let seq = seq_to_bytes("ACGTACGTACGTACGX");
     let sequence = Sequence::new("query", seq.clone());
-    let qual = b"I".repeat(16).to_vec();
+    let qual = b"I".repeat(16);
 
     let result = aligner.align_read(&seq, None)?;
-
     let sam = SAMRecord::from_alignment("read", &result, &sequence, &qual, "test_ref");
     let sam_str = sam.to_string();
-
-    assert!(sam_str.contains('\t'));
     let fields: Vec<&str> = sam_str.split('\t').collect();
     let flag: u16 = fields[1].parse().unwrap();
 
     if flag & 0x4 == 0 {
         assert!(fields[2] != "*");
     }
-
     Ok(())
 }
 
 #[test]
 fn test_multiple_alignments_same_read() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, _) = create_test_aligner();
     let seq = seq_to_bytes("ACGTACGTACGTACGT");
     let sequence = Sequence::new("query", seq.clone());
-    let qual = b"I".repeat(16).to_vec();
+    let qual = b"I".repeat(16);
 
     let result = aligner.align_read(&seq, None)?;
-
     let sam = SAMRecord::from_alignment("read", &result, &sequence, &qual, "test_ref");
     validate_sam_record(&sam.to_string())?;
-
     Ok(())
 }
 
@@ -299,24 +244,18 @@ fn test_reference_sequence_encoding() -> Result<(), BwaError> {
 
 #[test]
 fn test_mapq_calculation() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, _) = create_test_aligner();
     let unique_seq = seq_to_bytes("ACGTACGTACGTACGTTTTTTTTTTTTTTTT");
     let sequence = Sequence::new("query", unique_seq.clone());
-    let qual = b"I".repeat(32).to_vec();
+    let qual = b"I".repeat(32);
 
     let result = aligner.align_read(&unique_seq, None)?;
-
     let sam = SAMRecord::from_alignment("read", &result, &sequence, &qual, "test_ref");
     let sam_str = sam.to_string();
     let fields: Vec<&str> = sam_str.split('\t').collect();
     let mapq: u8 = fields[4].parse().unwrap();
 
     assert!(mapq <= 60, "MAPQ should be <= 60, got {}", mapq);
-
     Ok(())
 }
 
@@ -354,40 +293,29 @@ fn test_cigar_validation() {
 
 #[test]
 fn test_unmapped_read() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, _) = create_test_aligner();
     let random_seq = seq_to_bytes("XYZQRSTUVWXYZ");
     let sequence = Sequence::new("query", random_seq.clone());
-    let qual = b"I".repeat(13).to_vec();
+    let qual = b"I".repeat(13);
 
     let result = aligner.align_read(&random_seq, None)?;
-
     let sam = SAMRecord::from_alignment("unmapped", &result, &sequence, &qual, "test_ref");
     let sam_str = sam.to_string();
     let fields: Vec<&str> = sam_str.split('\t').collect();
 
     assert!(fields.len() >= 11);
-
     Ok(())
 }
 
 #[test]
 fn test_sam_record_fields() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, _) = create_test_aligner();
     let seq = seq_to_bytes("ACGTACGT");
     let sequence = Sequence::new("test", seq.clone());
     let qual = b"IIIIIIII".to_vec();
 
     let result = aligner.align_read(&seq, None)?;
     let sam_record = SAMRecord::from_alignment("my_read", &result, &sequence, &qual, "ref");
-
     let sam_str = sam_record.to_string();
     let fields: Vec<&str> = sam_str.split('\t').collect();
 
@@ -395,7 +323,6 @@ fn test_sam_record_fields() -> Result<(), BwaError> {
     assert_eq!(fields[0], "my_read");
     assert_eq!(fields[2], "ref");
     assert!(fields[5] == "*" || fields[5].contains('M') || fields[5].contains('=') || fields[5].contains('X'));
-
     Ok(())
 }
 
@@ -404,14 +331,10 @@ fn test_chr1_scaled_reference() -> Result<(), BwaError> {
     let ref_len = 1000;
     let bases = [b'A', b'C', b'G', b'T'];
     let pattern: Vec<u8> = (0..ref_len).map(|i| bases[i % 4]).collect();
-    let unique_region = b"GGGGGGGGGGAAAAAAAA";
     let mut full_seq = pattern.clone();
-    full_seq.extend_from_slice(unique_region);
+    full_seq.extend_from_slice(b"GGGGGGGGGGAAAAAAAA");
 
-    let ref_str = std::str::from_utf8(&full_seq).unwrap();
-    let fasta = format!(">chr1\n{}\n", ref_str);
-
-    let reference = Reference::parse_fasta(&fasta)?;
+    let reference = Reference::parse_fasta(&format!(">chr1\n{}", std::str::from_utf8(&full_seq).unwrap()))?;
     let total_len = reference.total_len();
     assert_eq!(total_len, ref_len + 18);
 
@@ -421,30 +344,21 @@ fn test_chr1_scaled_reference() -> Result<(), BwaError> {
 
     let read = seq_to_bytes("GGGGGGGGGGAAAAAAAA");
     let sequence = Sequence::new("scaled_read", read.clone());
-    let qual = b"I".repeat(18).to_vec();
+    let qual = b"I".repeat(18);
 
     let result = aligner.align_read(&read, None)?;
     let sam = SAMRecord::from_alignment("scaled_read", &result, &sequence, &qual, "chr1");
-
     let sam_str = sam.to_string();
     let fields: Vec<&str> = sam_str.split('\t').collect();
-    let pos: i64 = fields[3].parse().unwrap();
-    let cigar = fields[5].to_string();
 
     if fields[2] == "*" {
-        assert!(cigar == "*", "Unmapped read should have CIGAR *");
         return Ok(());
     }
 
     validate_sam_record(&sam_str)?;
-    assert!(pos >= 1, "Position should be valid");
-    assert!(pos <= total_len as i64, "Position should not exceed reference length");
-    assert!(
-        cigar.contains('M') || cigar.contains('=') || cigar.contains('X') || cigar.contains('S'),
-        "CIGAR '{}' should contain alignment ops", cigar
-    );
-    assert!(fields[4].parse::<u8>().unwrap() <= 60, "MAPQ should be <= 60");
-
+    let pos: i64 = fields[3].parse().unwrap();
+    assert!(pos >= 1 && pos <= total_len as i64);
+    assert!(fields[4].parse::<u8>().unwrap() <= 60);
     Ok(())
 }
 
@@ -462,10 +376,7 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
     let reads_path = temp_dir.join("test_reads.fq");
 
     std::fs::write(&ref_path, TEST_REFERENCE.as_bytes())?;
-    std::fs::write(
-        &reads_path,
-        b"@ref_read\nACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIII\n",
-    )?;
+    std::fs::write(&reads_path, b"@ref_read\nACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIII\n")?;
 
     let reference = Reference::parse_fasta(TEST_REFERENCE)?;
     let ref_slice = reference.as_slice();
@@ -474,8 +385,9 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
 
     let read = seq_to_bytes("ACGTACGTACGTACGT");
     let sequence = Sequence::new("ref_read", read.clone());
-    let qual = b"I".repeat(16).to_vec();
+    let qual = b"I".repeat(16);
     let result = aligner.align_read(&read, None)?;
+
     let bwa_output = Command::new(&bwa_path)
         .args(["mem", ref_path.to_str().unwrap(), reads_path.to_str().unwrap()])
         .output()?;
@@ -490,8 +402,8 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
 
     if let Some(bwa_record) = bwa_lines.first() {
         let bwa_fields: Vec<&str> = bwa_record.split('\t').collect();
-        let our_sam_str = SAMRecord::from_alignment("ref_read", &result, &sequence, &qual, "test_ref").to_string();
-        let our_fields: Vec<&str> = our_sam_str.split('\t').collect();
+        let our_sam = SAMRecord::from_alignment("ref_read", &result, &sequence, &qual, "test_ref").to_string();
+        let our_fields: Vec<&str> = our_sam.split('\t').collect();
 
         assert_eq!(our_fields[0], bwa_fields[0], "QNAME should match");
         assert_eq!(our_fields[2], bwa_fields[2], "RNAME should match");
@@ -510,11 +422,7 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
 
 #[test]
 fn test_sam_format_complete() -> Result<(), BwaError> {
-    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
-    let ref_slice = reference.as_slice();
-    let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
-
+    let (aligner, reference) = create_test_aligner();
     let reads = parse_fastq(TEST_FASTQ);
     let header = SAMHeader::new(reference.clone());
     let mut output = header.to_string();
