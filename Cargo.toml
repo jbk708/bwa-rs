@@ -19,7 +19,7 @@ wavelet-matrix = "0.4.7"
 succinct = "0.5.2"
 
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"  # Allow per-module with #[allow(unsafe_code)]
 
 [profile.release]
 opt-level = 3
