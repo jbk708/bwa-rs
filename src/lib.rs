@@ -39,6 +39,7 @@ pub mod sam;
 pub mod bam;
 pub mod paired;
 pub mod fastq;
+pub mod occ;
 
 pub use error::BwaError;
 pub use types::*;

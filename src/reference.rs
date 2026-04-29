@@ -44,7 +44,7 @@ impl Reference {
                 if !current_name.is_empty() {
                     contigs.push(Sequence::new(&current_name, Self::encode_bases(&current_bases)?));
                 }
-                current_name = line[1..].trim().split_whitespace().next().unwrap_or("").to_string();
+                current_name = line[1..].split_whitespace().next().unwrap_or("").to_string();
                 if name.is_empty() {
                     name = current_name.clone();
                 }
