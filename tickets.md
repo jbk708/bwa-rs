@@ -1,221 +1,122 @@
-# BWA-MEM Implementation Tickets
+# BWA-MEM Performance Optimization Tickets
 
-Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paired-end support.
-
-## Phase 1: Foundation
-
-### ✅ T1: Project Setup
-**Status:** Complete
-**Description:** Initialize Cargo project with minimal dependencies, define core types.
-**Deliverables:**
-- ✅ `Cargo.toml` with `clap`, `thiserror`, `memmap2`
-- ✅ `lib.rs` with module exports
-- ✅ Core structs: `Sequence`, `Quality`, `AlignmentRecord`
-
-### ✅ T2: Reference Storage
-**Status:** Complete
-**Description:** 2-bit encoded genome storage, FASTA parsing helpers.
-**Deliverables:**
-- ✅ `Reference` struct with 2-bit encoding (A=0, C=1, G=2, T=3, N=4)
-- ✅ Memory-efficient storage for 3GB genome
-- ✅ `Reference::from_fasta()` parser
-
----
-
-## Phase 2: FM-Index
-
-### ✅ T3: Suffix Array
-**Status:** Complete
-**Description:** SA construction using O(n log n) sort-based method.
-**Deliverables:**
-- ✅ `SuffixArray` struct
-- ✅ `SuffixArray::build()` implementation
-
-### ✅ T4: BWT Construction
-**Status:** Complete
-**Description:** Build BWT from suffix array.
-**Deliverables:**
-- ✅ `BWT` struct
-- ✅ `BWT::from_sa()`
-
-### ✅ T5: FM-Index Queries
-**Status:** Complete
-**Description:** LF-mapping, backward search, OCC counts.
-**Deliverables:**
-- ✅ `FMIndex` struct
-- ✅ `FMIndex::search()` - backward search
-- ✅ `FMIndex::find_all()` - get all positions
-- ✅ `OccTable::occ()` - efficient rank queries
-
-### ✅ T6: Index I/O
-**Status:** Complete
-**Description:** Save/load FM-index to disk with memory mapping.
-**Deliverables:**
-- ✅ `FMIndex::save(path)`
-- ✅ `FMIndex::load(path)` with memory-mapped files
-- ✅ Index file format with magic header
-
----
-
-## Phase 3: Seeding
-
-### ✅ T7: Backward Search
-**Status:** Complete
-**Description:** Extend FM-index search base-by-base.
-**Deliverables:**
-- ✅ Recursive backward search implementation
-
-### ✅ T8: MEM Discovery
-**Status:** Complete
-**Description:** Find all Maximal Exact Matches recursively.
-**Deliverables:**
-- ✅ `find_mems()` with configurable `min_seed_len`
-- ✅ Recursive backtracking implementation
-
-### ✅ T9: Seed Filtering
-**Status:** Complete
-**Description:** Filter overlapping and weak seeds.
-**Deliverables:**
-- ✅ `filter_mems()` removing redundant seeds
-
----
-
-## Phase 4: Alignment Extension
-
-### ✅ T10: SW Matrix
-**Status:** Complete
-**Description:** Initialize scoring matrix (match/mismatch/scoring).
-**Deliverables:**
-- ✅ `Scoring` struct with default BWA-MEM values
-
-### ✅ T11: Banded SW
-**Status:** Complete
-**Description:** Smith-Waterman with banded DP for speed.
-**Deliverables:**
-- [x] `extend_seed_forward()`
-- [x] `extend_seed_backward()`
-- [x] Band width optimization
-
-### ✅ T12: Affine Gaps
-**Status:** Complete
-**Description:** Support gap open/extension penalties.
-**Deliverables:**
-- [x] `AffineDP` struct with 3-matrix DP (M, X, G)
-- [x] `affine_extend_forward()` with banded DP
-- [x] Separate open vs extension penalties in `Scoring`
-
----
-
-## Phase 5: Chaining & Scoring
-
-### ✅ T13: Seed Chaining
-**Status:** Complete
-**Description:** Chain seeds into coherent alignment path.
-**Deliverables:**
-- ✅ `chain_seeds()` DP implementation
-- ✅ `ChainedSeed` struct with scores
-
-### ✅ T14: Best Alignment
-**Status:** Complete
-**Description:** Select best chain, compute position and CIGAR.
-**Deliverables:**
-- [x] `AlignmentResult` struct
-- [x] Full CIGAR generation from alignment path
-- [x] MAPQ calculation from alignment score
-
-### ✅ T15: Mismatch Annotation
-**Status:** Complete
-**Description:** Generate MD:Z tag for mismatches.
-**Deliverables:**
-- ✅ `mdz_string()` function
-- ✅ Proper SAM MD:Z tag format
-
----
-
-## Phase 6: Paired-End
-
-### ✅ T16: Insert Size Model
-**Status:** Complete
-**Description:** Track insert size distribution.
-**Deliverables:**
-- ✅ `InsertSizeDistribution` struct
-- ✅ Online mean/variance estimation
-
-### ✅ T17: Pairing Logic
-**Status:** Complete
-**Description:** Match read1/read2 by expected distance.
-**Deliverables:**
-- ✅ `pair_reads()` with FR orientation handling
-- ✅ Proper pair flag setting
-
-### ✅ T18: Rescue
-**Status:** Complete
-**Description:** Handle anomalous pairs, orphan rescue.
-**Deliverables:**
-- ✅ `rescue_unpaired()` for orphan reads
-- ✅ Anomalous pair detection
-
----
-
-## Phase 7: SAM Output
-
-### ✅ T19: SAM Record
-**Status:** Complete
-**Description:** Build all SAM fields.
-**Deliverables:**
-- ✅ `SAMRecord` struct with all 11 required fields
-- ✅ FLAG calculation for paired/mapped
-
-### ✅ T20: SAM Writer
-**Status:** Complete
-**Description:** Stream alignments to SAM file.
-**Deliverables:**
-- ✅ `SAMWriter` struct
-- ✅ Header generation (@HD, @SQ, @PG)
-
-### ✅ T21: BAM Support
-**Status:** Complete
-**Description:** Binary BAM output with BGZF compression.
-**Deliverables:**
-- ✅ `BAMWriter` struct
-- ✅ BGZF compression via flate2 (pure Rust, no hts-sys)
-- ✅ BAM header handling
-
----
-
-## Phase 8: CLI & Integration
-
-### ✅ T22: CLI Interface
-**Status:** Complete
-**Description:** Implement `bwa mem` equivalent CLI.
-**Deliverables:**
-- ✅ Basic CLI structure with `index` and `mem` subcommands
-- ✅ FASTQ parsing for reads (fastq.rs module)
-- ✅ BWA-MEM option support (-k seed length)
-- ✅ Progress reporting for large files
-
-### ✅ T23: Integration Tests
-**Status:** Complete
-**Description:** End-to-end alignment tests.
-**Deliverables:**
-- [x] Test on chr1 reference (test_chr1_scaled_reference)
-- [x] Compare output to reference BWA-MEM (test_compare_against_bwa_mem)
-- [x] Verify SAM format correctness (14 tests passing)
-
-### ✅ T24: README & Docs
-**Status:** Complete
-**Description:** Usage documentation.
-**Deliverables:**
-- ✅ README.md with examples
-- ✅ Module documentation
-
----
+Pure Rust implementation targeting C BWA-MEM performance.
 
 ## Summary
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 24 |
-| 🟡 Partial | 0 |
-| ⬜ Pending | 0 |
-| **Total** | **24** |
+| 🟡 In Progress | 0 |
+| ⬜ Pending | 10 |
+| **Total** | **10** |
+
+---
+
+## Phase 1: Fast Suffix Array
+
+### T25: SA-IS Algorithm
+**Status:** Pending
+**Description:** Replace O(n² log n) sort with O(n) induced sorting.
+**Deliverables:**
+- [ ] Integrate libsais via FFI or pure Rust port
+- [ ] Verify O(n) construction for 3GB genome
+- [ ] Memory-bounded streaming for large inputs
+
+### T26: Integer Alphabet SA
+**Status:** Pending
+**Description:** Radix sort on integer-encoded sequences.
+**Deliverables:**
+- [ ] Encode sequences as u8/u16 integers
+- [ ] Radix sort suffixes using integer comparison
+- [ ] Eliminate string slice overhead
+
+---
+
+## Phase 2: Succinct Occ Table
+
+### T27: Wavelet Tree
+**Status:** Pending
+**Description:** O(1) rank queries with compressed storage.
+**Deliverables:**
+- [ ] Wavelet tree implementation
+- [ ] O(1) occ(c, k) queries
+- [ ] Build from BWT in O(n)
+
+### T28: RRR / SDArray
+**Status:** Pending
+**Description:** Succinct bitvectors for rank queries.
+**Deliverables:**
+- [ ] RRR bitvector implementation
+- [ ] popcount-based occ queries
+- [ ] 2-3x compression vs raw counts
+
+---
+
+## Phase 3: SIMD Alignment
+
+### T29: SIMD Smith-Waterman
+**Status:** Pending
+**Description:** Vectorized SW using AVX2/AVX-512.
+**Deliverables:**
+- [ ] `packed_simd` or `wide` integration
+- [ ] Process 16-32 bases per cycle
+- [ ] CPU feature detection at runtime
+
+### T30: SIMD Affine DP
+**Status:** Pending
+**Description:** Vectorized 3-matrix affine gap alignment.
+**Deliverables:**
+- [ ] SIMD M/X/G matrices
+- [ ] Banded traversal with vectorization
+- [ ] Verify correctness vs scalar version
+
+---
+
+## Phase 4: Memory Optimization
+
+### T31: Full Memory Mapping
+**Status:** Pending
+**Description:** Memory map entire index for zero-copy access.
+**Deliverables:**
+- [ ] `memmap2` for index files
+- [ ] Never load index fully into RAM
+- [ ] Lazy loading for BWT/SA/Occ
+
+### T32: Compact Encoding
+**Status:** Pending
+**Description:** Bit-packed structures for minimal memory.
+**Deliverables:**
+- [ ] 2-bit BWT (done)
+- [ ] Bit-packed occurrence tables
+- [ ] Streaming index construction
+
+---
+
+## Phase 5: Parallelization
+
+### T33: Multi-threaded Alignment
+**Status:** Pending
+**Description:** Parallel read processing with Rayon.
+**Deliverables:**
+- [ ] Thread pool for batch alignment
+- [ ] Lock-free FM-Index queries
+- [ ] Configurable thread count
+
+### T34: Parallel Seeding
+**Status:** Pending
+**Description:** Partition query for multi-threaded MEM finding.
+**Deliverables:**
+- [ ] Divide long reads into chunks
+- [ ] Parallel MEM discovery
+- [ ] Merge and dedupe results
+
+---
+
+## Priority Order
+
+1. **T25** - SA-IS (biggest bottleneck, 100x potential)
+2. **T27** - Wavelet tree (32x occ improvement)
+3. **T29** - SIMD SW (4-8x alignment speedup)
+4. **T31** - Memory mapping (enables 3GB support)
+5. **T33** - Parallelization (multi-core throughput)
+6. T26, T28, T30, T32, T34 (refinements)
