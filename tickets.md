@@ -173,13 +173,13 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 - ✅ `SAMWriter` struct
 - ✅ Header generation (@HD, @SQ, @PG)
 
-### ⬜ T21: BAM Support
-**Status:** Pending
-**Description:** Binary BAM output.
+### ✅ T21: BAM Support
+**Status:** Complete
+**Description:** Binary BAM output with BGZF compression.
 **Deliverables:**
-- [ ] `BAMWriter` struct
-- [ ] BGZF compression via hts-sys
-- [ ] BAM header handling
+- ✅ `BAMWriter` struct
+- ✅ BGZF compression via flate2 (pure Rust, no hts-sys)
+- ✅ BAM header handling
 
 ---
 
@@ -215,9 +215,9 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 18 |
+| ✅ Complete | 19 |
 | 🟡 Partial | 2 |
-| ⬜ Pending | 4 |
+| ⬜ Pending | 3 |
 | **Total** | **24** |
 
 ---
@@ -228,5 +228,4 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 2. **T12** - Affine gaps (extend T11 with proper gap penalties)
 3. **T14, T15** - CIGAR generation, MD:Z tag
 4. **T22** - Full CLI with FASTQ parsing
-5. **T21** - BAM output
-6. **T23** - Integration tests
+5. **T23** - Integration tests

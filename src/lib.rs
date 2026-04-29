@@ -35,6 +35,7 @@ pub mod seed;
 pub mod alignment;
 pub mod chaining;
 pub mod sam;
+pub mod bam;
 pub mod paired;
 
 pub use error::BwaError;
