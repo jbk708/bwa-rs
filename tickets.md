@@ -215,17 +215,7 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 20 |
+| ✅ Complete | 24 |
 | 🟡 Partial | 0 |
-| ⬜ Pending | 3 |
+| ⬜ Pending | 0 |
 | **Total** | **24** |
-
----
-
-## Priority Order for Remaining Work
-
-1. **T6** - Index I/O (enables saving/loading indexes)
-2. **T12** - Affine gaps (extend T11 with proper gap penalties)
-3. **T14, T15** - CIGAR generation, MD:Z tag
-4. **T22** - Full CLI with FASTQ parsing
-5. **T23** - Integration tests
