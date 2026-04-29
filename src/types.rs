@@ -335,6 +335,7 @@ mod tests {
             reverse_strand: false,
             nm: 0,
             score: 5,
+            md_tag: None,
         };
 
         let read = vec![0, 1, 2, 3, 0];
@@ -356,6 +357,7 @@ mod tests {
             reverse_strand: false,
             nm: 2,
             score: 3,
+            md_tag: None,
         };
 
         let read = vec![0, 1, 2, 1, 2]; // A, C, G, C, G
@@ -378,6 +380,7 @@ mod tests {
             reverse_strand: false,
             nm: 2,
             score: 4,
+            md_tag: None,
         };
 
         // CIGAR: 2= 2D 2=
@@ -404,6 +407,7 @@ mod tests {
             reverse_strand: false,
             nm: 3,
             score: 6,
+            md_tag: None,
         };
 
         // CIGAR: 2= 1X 2= 1D
@@ -431,6 +435,7 @@ mod tests {
             reverse_strand: false,
             nm: 0,
             score: 6,
+            md_tag: None,
         };
 
         // 5= means 5 matches against reference
@@ -452,6 +457,7 @@ mod tests {
             reverse_strand: false,
             nm: 3,
             score: -12,
+            md_tag: None,
         };
 
         let read = vec![0, 1, 2]; // ACG

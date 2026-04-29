@@ -12,6 +12,7 @@ rust-version = "1.75"
 clap = { version = "4", features = ["derive"] }
 thiserror = "1"
 memmap2 = "0.9"
+flate2 = "1"
 
 [lints.rust]
 unsafe_code = "forbid"
