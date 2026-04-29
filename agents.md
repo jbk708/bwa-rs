@@ -39,6 +39,9 @@ T{N}: {Verb} {what changed}
 T{N}: {Ticket title}
 ```
 
+### PR Body
+Use single quotes around 'gh pr create --body' content to avoid shell interpolation issues with double quotes.
+
 ## Naming
 - Types: `CamelCase` - `Sequence`, `FMIndex`
 - Functions/variables: `snake_case` - `find_mems`, `insert_size`

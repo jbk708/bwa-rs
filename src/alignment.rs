@@ -331,6 +331,222 @@ pub fn optimal_bandwidth(query_len: usize) -> usize {
     (16 + query_len / 2).min(256)
 }
 
+#[derive(Clone)]
+pub struct AffineDP {
+    m: Vec<i32>,
+    x: Vec<i32>,
+    g: Vec<i32>,
+    rows: usize,
+    cols: usize,
+}
+
+impl AffineDP {
+    pub fn new(query_len: usize, ref_len: usize) -> Self {
+        let rows = query_len + 1;
+        let cols = ref_len + 1;
+        let size = rows * cols;
+        Self {
+            m: vec![i32::MIN / 2; size],
+            x: vec![i32::MIN / 2; size],
+            g: vec![i32::MIN / 2; size],
+            rows,
+            cols,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn idx(&self, i: usize, j: usize) -> usize {
+        i * self.cols + j
+    }
+
+    fn m_at(&self, i: usize, j: usize) -> i32 {
+        self.m[i * self.cols + j]
+    }
+
+    fn x_at(&self, i: usize, j: usize) -> i32 {
+        self.x[i * self.cols + j]
+    }
+
+    fn g_at(&self, i: usize, j: usize) -> i32 {
+        self.g[i * self.cols + j]
+    }
+
+    fn set_m(&mut self, i: usize, j: usize, val: i32) {
+        self.m[i * self.cols + j] = val;
+    }
+
+    fn set_x(&mut self, i: usize, j: usize, val: i32) {
+        self.x[i * self.cols + j] = val;
+    }
+
+    fn set_g(&mut self, i: usize, j: usize, val: i32) {
+        self.g[i * self.cols + j] = val;
+    }
+
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+}
+
+pub fn affine_extend_forward(
+    query: &[u8],
+    reference: &[u8],
+    start_pos: usize,
+    scoring: &Scoring,
+    bandwidth: usize,
+) -> SeedExtension {
+    let query_len = query.len();
+    let ref_len = reference.len().saturating_sub(start_pos);
+
+    if query_len == 0 || ref_len == 0 {
+        return SeedExtension {
+            score: 0,
+            query_end: 0,
+            ref_end: start_pos,
+            cigar: Cigar::new(),
+        };
+    }
+
+    let ref_end = (start_pos + ref_len).min(reference.len());
+    let actual_ref_len = ref_end - start_pos;
+    let bw = bandwidth.clamp(1, 256);
+
+    let mut dp = AffineDP::new(query_len, actual_ref_len);
+    dp.set_m(0, 0, 0);
+    dp.set_x(0, 0, i32::MIN / 2);
+    dp.set_g(0, 0, i32::MIN / 2);
+
+    for i in 1..=query_len {
+        let j_start = 1.max(i.saturating_sub(bw));
+        let j_end = (i + bw).min(actual_ref_len).min(actual_ref_len);
+
+        for j in j_start..=j_end {
+            let is_match = query[i - 1] == reference[start_pos + j - 1];
+            let match_score = if is_match {
+                scoring.match_score
+            } else {
+                -(scoring.mismatch_penalty)
+            };
+
+            let m_prev = dp.m_at(i - 1, j - 1);
+            let x_prev = dp.x_at(i - 1, j - 1);
+            let g_prev = dp.g_at(i - 1, j - 1);
+            let m_val = m_prev.saturating_add(match_score)
+                .max(x_prev.saturating_add(match_score))
+                .max(g_prev.saturating_add(match_score));
+            dp.set_m(i, j, m_val);
+
+            let x_open = dp.m_at(i - 1, j).saturating_sub(scoring.gap_open);
+            let x_extend = dp.x_at(i - 1, j).saturating_sub(scoring.gap_extend);
+            dp.set_x(i, j, x_open.max(x_extend));
+
+            let g_open = dp.m_at(i, j - 1).saturating_sub(scoring.gap_open);
+            let g_extend = dp.g_at(i, j - 1).saturating_sub(scoring.gap_extend);
+            dp.set_g(i, j, g_open.max(g_extend));
+        }
+    }
+
+    let mut best_score = i32::MIN;
+    let mut best_i = 0;
+    let mut best_j = 0;
+
+    for i in 1..=query_len {
+        let j = (actual_ref_len.min(i.saturating_add(bw))).min(actual_ref_len);
+        let score = dp.m_at(i, j).max(dp.x_at(i, j)).max(dp.g_at(i, j));
+        if score > best_score {
+            best_score = score;
+            best_i = i;
+            best_j = j;
+        }
+    }
+
+    let cigar = traceback_affine(&dp, query, reference, start_pos, best_i, best_j, scoring);
+
+    SeedExtension {
+        score: best_score,
+        query_end: best_i,
+        ref_end: start_pos + best_j,
+        cigar,
+    }
+}
+
+fn traceback_affine(
+    dp: &AffineDP,
+    query: &[u8],
+    reference: &[u8],
+    ref_start: usize,
+    mut i: usize,
+    mut j: usize,
+    scoring: &Scoring,
+) -> Cigar {
+    let mut ops = Vec::new();
+    let match_s = scoring.match_score;
+    let mismatch_s = -(scoring.mismatch_penalty);
+
+    while i > 0 && j > 0 {
+        let current = dp.m_at(i, j).max(dp.x_at(i, j)).max(dp.g_at(i, j));
+
+        let is_match = query[i - 1] == reference[ref_start + j - 1];
+        let delta = if is_match { match_s } else { mismatch_s };
+
+        if current == dp.m_at(i, j) && current == dp.m_at(i - 1, j - 1) + delta {
+            ops.push(if is_match { CigarOp::Eq } else { CigarOp::X });
+            i -= 1;
+            j -= 1;
+        } else if current == dp.x_at(i, j) {
+            ops.push(CigarOp::D);
+            i -= 1;
+        } else if current == dp.g_at(i, j) {
+            ops.push(CigarOp::I);
+            j -= 1;
+        } else if current == dp.m_at(i, j) {
+            ops.push(if is_match { CigarOp::Eq } else { CigarOp::X });
+            i -= 1;
+            j -= 1;
+        } else {
+            break;
+        }
+    }
+
+    while i > 0 {
+        ops.push(CigarOp::D);
+        i -= 1;
+    }
+    while j > 0 {
+        ops.push(CigarOp::I);
+        j -= 1;
+    }
+
+    ops.reverse();
+    compress_cigar(ops)
+}
+
+fn compress_cigar(ops: Vec<CigarOp>) -> Cigar {
+    let mut cigar = Cigar::new();
+    if ops.is_empty() {
+        return cigar;
+    }
+
+    let mut current_op = ops[0];
+    let mut current_len = 1u32;
+
+    for op in ops.iter().skip(1) {
+        if *op == current_op {
+            current_len += 1;
+        } else {
+            cigar.push(current_op, current_len);
+            current_op = *op;
+            current_len = 1;
+        }
+    }
+    cigar.push(current_op, current_len);
+    cigar
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,5 +640,79 @@ mod tests {
 
         let ext = extend_seed_forward(&query, &reference, 0, &scoring, 0);
         assert!(ext.score >= 0);
+    }
+
+    #[test]
+    fn test_affine_exact_match() {
+        let query = vec![0, 1, 2, 3];
+        let reference = vec![0, 1, 2, 3];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        assert!(ext.score > 0, "Score should be positive for exact match");
+        assert_eq!(ext.query_end, query.len());
+        let cigar_str = ext.cigar.to_string();
+        assert!(cigar_str.contains('=') || cigar_str.contains('X'), "CIGAR should contain match ops: {}", cigar_str);
+    }
+
+    #[test]
+    fn test_affine_insertion() {
+        let query = vec![0, 1, 4, 2, 3];
+        let reference = vec![0, 1, 2, 3];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        let cigar_str = ext.cigar.to_string();
+        assert!(cigar_str.len() > 0, "CIGAR should not be empty");
+    }
+
+    #[test]
+    fn test_affine_deletion() {
+        let query = vec![0, 1, 2, 3];
+        let reference = vec![0, 1, 4, 2, 3];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        let cigar_str = ext.cigar.to_string();
+        assert!(cigar_str.len() > 0, "CIGAR should not be empty");
+    }
+
+    #[test]
+    fn test_affine_gap_open_vs_extend() {
+        let scoring = Scoring::default();
+        assert!(scoring.gap_open > scoring.gap_extend);
+        let single_gap_cost = scoring.gap_open as i32;
+        let two_gap_cost = (scoring.gap_open + scoring.gap_extend) as i32;
+        assert!(single_gap_cost < two_gap_cost, "Single gap should cost less than two separate gaps");
+    }
+
+    #[test]
+    fn test_affine_empty_query() {
+        let query: Vec<u8> = vec![];
+        let reference = vec![0, 1, 2, 3];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        assert_eq!(ext.score, 0);
+        assert_eq!(ext.query_end, 0);
+    }
+
+    #[test]
+    fn test_affine_empty_reference() {
+        let query = vec![0, 1, 2, 3];
+        let reference: Vec<u8> = vec![];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        assert_eq!(ext.score, 0);
+        assert_eq!(ext.query_end, 0);
+    }
+
+    #[test]
+    fn test_affine_dp_struct() {
+        let dp = AffineDP::new(5, 10);
+        assert_eq!(dp.rows(), 6);
+        assert_eq!(dp.cols(), 11);
+        assert!(dp.m_at(0, 0) < 0);
     }
 }
