@@ -1,6 +1,7 @@
 //! Core types for sequence representation and alignment records.
 
 use std::fmt;
+use std::fmt::Display;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sequence {
@@ -102,13 +103,6 @@ impl Cigar {
         self.ops.push((op, len));
     }
 
-    pub fn to_string(&self) -> String {
-        self.ops
-            .iter()
-            .map(|(op, len)| format!("{}{}", len, char_from_op(*op)))
-            .collect()
-    }
-
     pub fn reference_length(&self) -> usize {
         self.ops
             .iter()
@@ -116,11 +110,40 @@ impl Cigar {
             .map(|(_, len)| *len as usize)
             .sum()
     }
+
+    pub fn extend(&mut self, other: Cigar) {
+        if other.ops.is_empty() {
+            return;
+        }
+        if self.ops.is_empty() {
+            *self = other;
+            return;
+        }
+        if let Some(last) = self.ops.last_mut() {
+            if let Some(first) = other.ops.first() {
+                if last.0 == first.0 {
+                    last.1 += first.1;
+                    self.ops.extend(other.ops.iter().skip(1));
+                    return;
+                }
+            }
+        }
+        self.ops.extend(other.ops);
+    }
 }
 
 impl Default for Cigar {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Display for Cigar {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (op, len) in &self.ops {
+            write!(f, "{}{}", len, char_from_op(*op))?;
+        }
+        Ok(())
     }
 }
 
