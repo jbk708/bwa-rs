@@ -39,6 +39,13 @@ T{N}: {Verb} {what changed}
 T{N}: {Ticket title}
 ```
 
+### PR Body
+Use single quotes for inline code (double quotes cause shell interpolation):
+```markdown
+## Deliverables
+- 'AffineDP' struct with 3-matrix DP
+```
+
 ## Naming
 - Types: `CamelCase` - `Sequence`, `FMIndex`
 - Functions/variables: `snake_case` - `find_mems`, `insert_size`
