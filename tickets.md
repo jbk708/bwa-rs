@@ -88,20 +88,21 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 **Deliverables:**
 - ✅ `Scoring` struct with default BWA-MEM values
 
-### ⬜ T11: Banded SW
-**Status:** Pending
+### ✅ T11: Banded SW
+**Status:** Complete
 **Description:** Smith-Waterman with banded DP for speed.
 **Deliverables:**
-- [ ] `extend_seed_forward()`
-- [ ] `extend_seed_backward()`
-- [ ] Band width optimization
+- [x] `extend_seed_forward()`
+- [x] `extend_seed_backward()`
+- [x] Band width optimization
 
-### ⬜ T12: Affine Gaps
-**Status:** Pending
+### ✅ T12: Affine Gaps
+**Status:** Complete
 **Description:** Support gap open/extension penalties.
 **Deliverables:**
-- [ ] `AffineGapAlignment` implementation
-- [ ] Separate open vs extension penalties
+- [x] `AffineDP` struct with 3-matrix DP (M, X, G)
+- [x] `affine_extend_forward()` with banded DP
+- [x] Separate open vs extension penalties in `Scoring`
 
 ---
 
@@ -214,9 +215,9 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 15 |
+| ✅ Complete | 16 |
 | 🟡 Partial | 3 |
-| ⬜ Pending | 6 |
+| ⬜ Pending | 5 |
 | **Total** | **24** |
 
 ---
@@ -224,7 +225,7 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 ## Priority Order for Remaining Work
 
 1. **T6** - Index I/O (enables saving/loading indexes)
-2. **T11, T12** - Proper Smith-Waterman alignment
+2. **T12** - Affine gaps (extend T11 with proper gap penalties)
 3. **T14, T15** - CIGAR generation, MD:Z tag
 4. **T22** - Full CLI with FASTQ parsing
 5. **T21** - BAM output
