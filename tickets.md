@@ -7,9 +7,9 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | 🟡 In Progress | 0 |
-| ⬜ Pending | 7 |
-| ✅ Done | 3 |
-| **Total** | **10** |
+| ⬜ Pending | 5 |
+| ✅ Done | 4 |
+| **Total** | **9** |
 
 ---
 
@@ -85,12 +85,19 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 ## Phase 4: Memory Optimization
 
 ### T31: Full Memory Mapping
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** Memory map entire index for zero-copy access.
 **Deliverables:**
-- [ ] `memmap2` for index files
-- [ ] Never load index fully into RAM
-- [ ] Lazy loading for BWT/SA/Occ
+- [x] `memmap2` for index files
+- [x] Never load index fully into RAM
+- [x] Lazy loading for BWT/SA/Occ
+
+**Changes:**
+- Added `src/mmap_index.rs` with `MmapFMIndex` struct
+- `MmapFMIndex::open()` - memory-maps index without loading into RAM
+- `MmapFMIndex::build_and_save()` - builds and saves in one step
+- All search operations read directly from mmap
+- Changed `unsafe_code` lint to `deny` (allows module-level `#![allow]`)
 
 ### T32: Compact Encoding
 **Status:** Pending
