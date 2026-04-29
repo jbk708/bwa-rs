@@ -54,6 +54,7 @@ pub struct SAMRecord {
     pub tlen: i32,
     pub seq: String,
     pub qual: String,
+    pub md_tag: Option<String>,
 }
 
 impl SAMRecord {
@@ -82,6 +83,7 @@ impl SAMRecord {
             tlen,
             seq,
             qual,
+            md_tag: None,
         }
     }
 
@@ -95,7 +97,7 @@ impl SAMRecord {
         let flag = alignment.flag
             | if alignment.reverse_strand { 0x10 } else { 0 };
 
-        Self::new(
+        let mut record = Self::new(
             qname.to_string(),
             flag,
             contig_name.to_string(),
@@ -111,11 +113,13 @@ impl SAMRecord {
             } else {
                 String::from_utf8_lossy(qual).to_string()
             },
-        )
+        );
+        record.md_tag = alignment.md_tag.clone();
+        record
     }
 
     pub fn to_string(&self) -> String {
-        format!(
+        let base = format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             self.qname,
             self.flag,
@@ -128,7 +132,12 @@ impl SAMRecord {
             self.tlen,
             self.seq,
             self.qual,
-        )
+        );
+        if let Some(ref md) = self.md_tag {
+            format!("{}\t{}", base, md)
+        } else {
+            base
+        }
     }
 }
 

@@ -205,6 +205,7 @@ pub struct AlignmentResult {
     pub reverse_strand: bool,
     pub nm: u32,
     pub score: i32,
+    pub md_tag: Option<String>,
 }
 
 impl AlignmentResult {
@@ -217,6 +218,7 @@ impl AlignmentResult {
             reverse_strand: false,
             nm: 0,
             score: 0,
+            md_tag: None,
         }
     }
 }
