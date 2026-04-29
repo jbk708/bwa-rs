@@ -122,6 +122,26 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 
 ---
 
+## Maintenance
+
+### T35: Code Cleanup
+**Status:** ✅ Done
+**Description:** Simplify source files and integration tests.
+**Deliverables:**
+- [x] Review and simplify each source file
+- [x] Clean up integration tests
+- [x] Ensure `cargo clippy` passes
+
+**Changes:**
+- Fixed `manual_strip` clippy warning in `reference.rs`
+- Implemented `Display` trait for `SAMHeader` and `SAMRecord` (replaced `to_string` methods)
+- Added `#[allow(clippy::too_many_arguments)]` for `SAMRecord::new`
+- Consolidated imports in `types.rs`
+- Simplified integration tests with `create_test_aligner()` helper function
+- Fixed temporary lifetime issues in integration tests
+
+---
+
 ## Priority Order
 
 1. **T25** - SA-IS (biggest bottleneck, 100x potential)
