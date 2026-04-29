@@ -7,8 +7,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | 🟡 In Progress | 0 |
-| ⬜ Pending | 9 |
-| ✅ Done | 1 |
+| ⬜ Pending | 8 |
+| ✅ Done | 2 |
 | **Total** | **10** |
 
 ---
@@ -41,12 +41,14 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 ## Phase 2: Succinct Occ Table
 
 ### T27: Wavelet Tree
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** O(1) rank queries with compressed storage.
 **Deliverables:**
-- [ ] Wavelet tree implementation
-- [ ] O(1) occ(c, k) queries
-- [ ] Build from BWT in O(n)
+- [x] Wavelet tree implementation
+- [x] O(1) occ(c, k) queries (using wavelet-matrix crate)
+- [x] Build from BWT in O(n)
+
+**Notes:** Using the `wavelet-matrix` crate for efficient rank queries. The wrapper handles edge cases (empty, single-element, all-same sequences).
 
 ### T28: RRR / SDArray
 **Status:** Pending

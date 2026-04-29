@@ -86,7 +86,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     let read2_reader = args.read2.as_ref().map(|p| FASTQReader::from_path(p)).transpose()?;
 
     let mut count = 0u64;
-    let mut iter = read1_reader.into_iter();
+    let iter = read1_reader.into_iter();
     
     if let Some(r2) = read2_reader {
         let mut r2_iter = r2.into_iter();
