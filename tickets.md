@@ -115,13 +115,13 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 - ✅ `chain_seeds()` DP implementation
 - ✅ `ChainedSeed` struct with scores
 
-### 🟡 T14: Best Alignment
-**Status:** Partial
+### ✅ T14: Best Alignment
+**Status:** Complete
 **Description:** Select best chain, compute position and CIGAR.
 **Deliverables:**
 - [x] `AlignmentResult` struct
-- [ ] Full CIGAR generation from alignment path
-- [ ] MAPQ calculation from alignment score
+- [x] Full CIGAR generation from alignment path
+- [x] MAPQ calculation from alignment score
 
 ### ⬜ T15: Mismatch Annotation
 **Status:** Pending
@@ -215,8 +215,8 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 16 |
-| 🟡 Partial | 3 |
+| ✅ Complete | 17 |
+| 🟡 Partial | 2 |
 | ⬜ Pending | 5 |
 | **Total** | **24** |
 

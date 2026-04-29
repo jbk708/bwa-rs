@@ -62,8 +62,9 @@ fn main() -> Result<(), BwaError> {
         }
         Cli::Mem(args) => {
             let reference = Reference::from_fasta(&args.reference)?;
+            let ref_data = reference.as_slice().to_vec();
             let index = FMIndex::build(&reference);
-            let _aligner = Aligner::new(index).min_seed_len(args.min_seed_len as usize);
+            let _aligner = Aligner::new(index, ref_data).min_seed_len(args.min_seed_len as usize);
 
             println!("Aligning reads from {:?}", args.read1);
             println!("Reference: {:?}", args.reference);
