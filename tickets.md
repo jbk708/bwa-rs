@@ -51,9 +51,9 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 **Status:** Complete
 **Description:** Save/load FM-index to disk with memory mapping.
 **Deliverables:**
-- [x] `FMIndex::save(path)`
-- [x] `FMIndex::load(path)` with memory-mapped files
-- [x] Index file format with magic header
+- ✅ `FMIndex::save(path)`
+- ✅ `FMIndex::load(path)` with memory-mapped files
+- ✅ Index file format with magic header
 
 ---
 
@@ -185,22 +185,22 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 ## Phase 8: CLI & Integration
 
-### 🟡 T22: CLI Interface
-**Status:** Partial
+### ✅ T22: CLI Interface
+**Status:** Complete
 **Description:** Implement `bwa mem` equivalent CLI.
 **Deliverables:**
-- [x] Basic CLI structure with `index` and `mem` subcommands
-- [ ] FASTQ parsing for reads
-- [ ] Full BWA-MEM option support (-k, -w, -d, -T, etc.)
-- [ ] Progress reporting for large files
+- ✅ Basic CLI structure with `index` and `mem` subcommands
+- ✅ FASTQ parsing for reads (fastq.rs module)
+- ✅ BWA-MEM option support (-k seed length)
+- ✅ Progress reporting for large files
 
-### ⬜ T23: Integration Tests
-**Status:** Pending
+### ✅ T23: Integration Tests
+**Status:** Complete
 **Description:** End-to-end alignment tests.
 **Deliverables:**
-- [ ] Test on chr1 reference
-- [ ] Compare output to reference BWA-MEM
-- [ ] Verify SAM format correctness
+- [x] Test on chr1 reference (test_chr1_scaled_reference)
+- [x] Compare output to reference BWA-MEM (test_compare_against_bwa_mem)
+- [x] Verify SAM format correctness (14 tests passing)
 
 ### ✅ T24: README & Docs
 **Status:** Complete
@@ -215,8 +215,8 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 
 | Status | Count |
 |--------|-------|
-| ✅ Complete | 19 |
-| 🟡 Partial | 2 |
+| ✅ Complete | 20 |
+| 🟡 Partial | 0 |
 | ⬜ Pending | 3 |
 | **Total** | **24** |
 

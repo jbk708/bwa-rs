@@ -37,6 +37,7 @@ pub mod chaining;
 pub mod sam;
 pub mod bam;
 pub mod paired;
+pub mod fastq;
 
 pub use error::BwaError;
 pub use types::*;
