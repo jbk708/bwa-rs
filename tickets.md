@@ -27,12 +27,14 @@ Pure Rust implementation targeting C BWA-MEM performance.
 This replaces the sort-based O(n² log n) approach with true O(n) performance.
 
 ### T26: Integer Alphabet SA
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** Radix sort on integer-encoded sequences.
 **Deliverables:**
-- [ ] Encode sequences as u8/u16 integers
-- [ ] Radix sort suffixes using integer comparison
-- [ ] Eliminate string slice overhead
+- [x] Encode sequences as u8/u16 integers
+- [x] Radix sort suffixes using integer comparison
+- [x] Eliminate string slice overhead
+
+**Notes:** Using libsais-rs crate for O(n) integer alphabet SA construction. Provides `encode_sequence()`, `build_sa_integer()`, and `build_sa_i32()` functions. Radix-style sorting on compact integers eliminates string comparison overhead.
 
 ---
 
