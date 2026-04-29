@@ -40,11 +40,7 @@ T{N}: {Ticket title}
 ```
 
 ### PR Body
-Use single quotes for inline code (double quotes cause shell interpolation):
-```markdown
-## Deliverables
-- 'AffineDP' struct with 3-matrix DP
-```
+Use single quotes around 'gh pr create --body' content to avoid shell interpolation issues with double quotes.
 
 ## Naming
 - Types: `CamelCase` - `Sequence`, `FMIndex`
