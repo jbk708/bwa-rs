@@ -16,6 +16,7 @@ flate2 = "1"
 sa-is = "0.1.0"
 libsais-rs = "0.1"
 wavelet-matrix = "0.4.7"
+succinct = "0.5.2"
 
 [lints.rust]
 unsafe_code = "forbid"
