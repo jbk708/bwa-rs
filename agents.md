@@ -15,6 +15,7 @@
 4. **Implement** - Minimum code to pass tests
 5. **Simplify** - `cargo clippy --fix`, no warnings, `cargo test` passes
 6. **PR** - Create PR: `gh pr create --title "T{N}: {Title}" --body "..."`
+7. **Monitor** - Wait for CI checks to pass: `gh pr checks --wait`. Rebase if needed.
 
 ## Formats
 

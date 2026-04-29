@@ -6,7 +6,7 @@ description = "Pure Rust BWA-MEM implementation for genomic alignment"
 license = "MIT"
 repository = "https://github.com/USER/bwa-mem"
 authors = ["Jonathan Kirkland <jokirkland@ucsd.edu>"]
-rust-version = "1.75"
+rust-version = "1.85"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

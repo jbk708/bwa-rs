@@ -405,7 +405,7 @@ pub fn extend_seed_backward(
     for d in 0..=actual_bw {
         for ref_pos in [
             seed_end.saturating_sub(d),
-            seed_end.saturating_sub(d.saturating_sub(1).max(0)),
+            seed_end.saturating_sub(d.saturating_sub(1)),
         ] {
             if ref_pos == 0 || ref_pos >= ref_len {
                 continue;
