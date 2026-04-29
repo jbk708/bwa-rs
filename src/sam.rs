@@ -97,13 +97,23 @@ impl SAMRecord {
         let flag = alignment.flag
             | if alignment.reverse_strand { 0x10 } else { 0 };
 
+        let (rname, pos, cigar) = if flag & 0x4 != 0 {
+            ("*".to_string(), 0, "*".to_string())
+        } else {
+            (
+                contig_name.to_string(),
+                (alignment.position + 1) as u32,
+                alignment.cigar.to_string(),
+            )
+        };
+
         let mut record = Self::new(
             qname.to_string(),
             flag,
-            contig_name.to_string(),
-            (alignment.position + 1) as u32,
+            rname,
+            pos,
             alignment.mapq,
-            alignment.cigar.to_string(),
+            cigar,
             "*".to_string(),
             0,
             0,
@@ -114,7 +124,11 @@ impl SAMRecord {
                 String::from_utf8_lossy(qual).to_string()
             },
         );
-        record.md_tag = alignment.md_tag.clone();
+        record.md_tag = if flag & 0x4 != 0 {
+            None
+        } else {
+            alignment.md_tag.clone()
+        };
         record
     }
 
@@ -138,6 +152,26 @@ impl SAMRecord {
         } else {
             base
         }
+    }
+
+    pub fn unmapped(qname: &str, seq: &[u8], qual: &[u8]) -> Self {
+        Self::new(
+            qname.to_string(),
+            0x4,
+            "*".to_string(),
+            0,
+            0,
+            "*".to_string(),
+            "*".to_string(),
+            0,
+            0,
+            Reference::decode_sequence(seq),
+            if qual.is_empty() {
+                "*".to_string()
+            } else {
+                String::from_utf8_lossy(qual).to_string()
+            },
+        )
     }
 }
 

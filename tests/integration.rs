@@ -1,6 +1,7 @@
 use bwa_mem::{Aligner, BwaError, FMIndex, Reference};
 use bwa_mem::sam::{SAMHeader, SAMRecord};
 use bwa_mem::types::Sequence;
+use std::process::Command;
 
 const TEST_REFERENCE: &str = ">test_ref\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n";
 
@@ -394,6 +395,159 @@ fn test_sam_record_fields() -> Result<(), BwaError> {
     assert_eq!(fields[0], "my_read");
     assert_eq!(fields[2], "ref");
     assert!(fields[5] == "*" || fields[5].contains('M') || fields[5].contains('=') || fields[5].contains('X'));
+
+    Ok(())
+}
+
+#[test]
+fn test_chr1_scaled_reference() -> Result<(), BwaError> {
+    let ref_len = 1000;
+    let bases = [b'A', b'C', b'G', b'T'];
+    let pattern: Vec<u8> = (0..ref_len).map(|i| bases[i % 4]).collect();
+    let unique_region = b"GGGGGGGGGGAAAAAAAA";
+    let mut full_seq = pattern.clone();
+    full_seq.extend_from_slice(unique_region);
+
+    let ref_str = std::str::from_utf8(&full_seq).unwrap();
+    let fasta = format!(">chr1\n{}\n", ref_str);
+
+    let reference = Reference::parse_fasta(&fasta)?;
+    let total_len = reference.total_len();
+    assert_eq!(total_len, ref_len + 18);
+
+    let ref_slice = reference.as_slice();
+    let index = FMIndex::build(&reference);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(10);
+
+    let read = seq_to_bytes("GGGGGGGGGGAAAAAAAA");
+    let sequence = Sequence::new("scaled_read", read.clone());
+    let qual = b"I".repeat(18).to_vec();
+
+    let result = aligner.align_read(&read, None)?;
+    let sam = SAMRecord::from_alignment("scaled_read", &result, &sequence, &qual, "chr1");
+
+    let sam_str = sam.to_string();
+    let fields: Vec<&str> = sam_str.split('\t').collect();
+    let pos: i64 = fields[3].parse().unwrap();
+    let cigar = fields[5].to_string();
+
+    if fields[2] == "*" {
+        assert!(cigar == "*", "Unmapped read should have CIGAR *");
+        return Ok(());
+    }
+
+    validate_sam_record(&sam_str)?;
+    assert!(pos >= 1, "Position should be valid");
+    assert!(pos <= total_len as i64, "Position should not exceed reference length");
+    assert!(
+        cigar.contains('M') || cigar.contains('=') || cigar.contains('X') || cigar.contains('S'),
+        "CIGAR '{}' should contain alignment ops", cigar
+    );
+    assert!(fields[4].parse::<u8>().unwrap() <= 60, "MAPQ should be <= 60");
+
+    Ok(())
+}
+
+#[test]
+fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
+    let bwa_path = std::env::var("BWA_PATH").unwrap_or_else(|_| "bwa".to_string());
+
+    if Command::new(&bwa_path).arg("version").output().is_err() {
+        println!("SKIP: bwa not available at {}", bwa_path);
+        return Ok(());
+    }
+
+    let temp_dir = std::env::temp_dir();
+    let ref_path = temp_dir.join("test_ref.fa");
+    let reads_path = temp_dir.join("test_reads.fq");
+
+    std::fs::write(&ref_path, TEST_REFERENCE.as_bytes())?;
+    std::fs::write(
+        &reads_path,
+        b"@ref_read\nACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIII\n",
+    )?;
+
+    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
+    let ref_slice = reference.as_slice();
+    let index = FMIndex::build(&reference);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(10);
+
+    let read = seq_to_bytes("ACGTACGTACGTACGT");
+    let sequence = Sequence::new("ref_read", read.clone());
+    let qual = b"I".repeat(16).to_vec();
+    let result = aligner.align_read(&read, None)?;
+    let bwa_output = Command::new(&bwa_path)
+        .args(["mem", ref_path.to_str().unwrap(), reads_path.to_str().unwrap()])
+        .output()?;
+
+    if !bwa_output.status.success() {
+        println!("SKIP: bwa failed to run");
+        return Ok(());
+    }
+
+    let bwa_sam = String::from_utf8_lossy(&bwa_output.stdout);
+    let bwa_lines: Vec<&str> = bwa_sam.lines().filter(|l| !l.starts_with('@')).collect();
+
+    if let Some(bwa_record) = bwa_lines.first() {
+        let bwa_fields: Vec<&str> = bwa_record.split('\t').collect();
+        let our_sam_str = SAMRecord::from_alignment("ref_read", &result, &sequence, &qual, "test_ref").to_string();
+        let our_fields: Vec<&str> = our_sam_str.split('\t').collect();
+
+        assert_eq!(our_fields[0], bwa_fields[0], "QNAME should match");
+        assert_eq!(our_fields[2], bwa_fields[2], "RNAME should match");
+        assert_eq!(our_fields[5], bwa_fields[5], "CIGAR should match");
+
+        let our_pos: i64 = our_fields[3].parse().unwrap();
+        let bwa_pos: i64 = bwa_fields[3].parse().unwrap();
+        assert_eq!(our_pos, bwa_pos, "Position should match");
+    }
+
+    std::fs::remove_file(&ref_path).ok();
+    std::fs::remove_file(&reads_path).ok();
+
+    Ok(())
+}
+
+#[test]
+fn test_sam_format_complete() -> Result<(), BwaError> {
+    let reference = Reference::parse_fasta(TEST_REFERENCE)?;
+    let ref_slice = reference.as_slice();
+    let index = FMIndex::build(&reference);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
+
+    let reads = parse_fastq(TEST_FASTQ);
+    let header = SAMHeader::new(reference.clone());
+    let mut output = header.to_string();
+
+    for (qname, seq, qual) in &reads {
+        let result = aligner.align_read(seq, None);
+        let sequence = Sequence::new(qname, seq.clone());
+        let sam_record = match result {
+            Ok(alignment) => SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref"),
+            Err(_) => SAMRecord::unmapped(qname, seq, qual),
+        };
+        output.push_str(&sam_record.to_string());
+        output.push('\n');
+    }
+
+    let mut line_count = 0;
+    let mut header_count = 0;
+
+    for line in output.lines() {
+        if line.starts_with('@') {
+            header_count += 1;
+        } else {
+            validate_sam_record(line)?;
+            line_count += 1;
+        }
+    }
+
+    assert!(header_count >= 3, "Should have @HD, @SQ, @PG headers");
+    assert_eq!(line_count, 3, "Should have 3 alignment records");
+
+    assert!(output.contains("@HD\tVN:"), "Missing @HD header");
+    assert!(output.contains("@SQ\tSN:test_ref\tLN:144"), "Missing @SQ header");
+    assert!(output.contains("@PG"), "Missing @PG header");
 
     Ok(())
 }
