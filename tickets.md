@@ -123,12 +123,12 @@ Pure Rust implementation of BWA-MEM for human-scale genomic alignment with paire
 - [x] Full CIGAR generation from alignment path
 - [x] MAPQ calculation from alignment score
 
-### ⬜ T15: Mismatch Annotation
-**Status:** Pending
+### ✅ T15: Mismatch Annotation
+**Status:** Complete
 **Description:** Generate MD:Z tag for mismatches.
 **Deliverables:**
-- [ ] `mdz_string()` function
-- [ ] Proper SAM MD:Z tag format
+- ✅ `mdz_string()` function
+- ✅ Proper SAM MD:Z tag format
 
 ---
 
