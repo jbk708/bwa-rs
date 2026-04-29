@@ -30,7 +30,7 @@ impl<R: Read> Iterator for FASTQReader<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.buffer.clear();
-        
+
         let name = match self.reader.read_line(&mut self.buffer) {
             Ok(0) => return None,
             Ok(_) => self.buffer.trim().to_string(),
@@ -76,11 +76,7 @@ impl<R: Read> Iterator for FASTQReader<R> {
             ))));
         }
 
-        Some(Ok(FastqRecord {
-            qname,
-            seq,
-            qual,
-        }))
+        Some(Ok(FastqRecord { qname, seq, qual }))
     }
 }
 
@@ -92,7 +88,8 @@ pub struct FastqRecord {
 
 impl FastqRecord {
     pub fn to_sequence(&self) -> Sequence {
-        let bases: Vec<u8> = self.seq
+        let bases: Vec<u8> = self
+            .seq
             .bytes()
             .map(|b| match b {
                 b'A' | b'a' => 0,
@@ -120,7 +117,7 @@ mod tests {
     fn test_parse_simple() {
         let data = b"@read1\nACGT\n+\nIIII\n";
         let reader = FASTQReader::new(Cursor::new(&data[..]));
-        
+
         let records: Vec<_> = reader.collect();
         assert_eq!(records.len(), 1);
         let record = records[0].as_ref().unwrap();

@@ -3,9 +3,9 @@
 use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
-use crate::seed::{find_mems, filter_mems, DEFAULT_MIN_SEED_LEN};
 use crate::reference::Reference;
-use crate::types::{AlignmentResult, Cigar, CigarOp, ChainedSeed, MEM};
+use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
+use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
 
 #[derive(Clone, Debug)]
 pub struct Scoring {
@@ -54,7 +54,11 @@ impl Aligner {
         self
     }
 
-    pub fn align_read(&self, query: &[u8], _mate: Option<&[u8]>) -> Result<AlignmentResult, BwaError> {
+    pub fn align_read(
+        &self,
+        query: &[u8],
+        _mate: Option<&[u8]>,
+    ) -> Result<AlignmentResult, BwaError> {
         let mut mems = find_mems(&self.index, query, self.min_seed_len);
 
         if mems.is_empty() {
@@ -81,7 +85,11 @@ impl Aligner {
         self.build_alignment(query, best_chain)
     }
 
-    fn build_alignment(&self, query: &[u8], chain: &ChainedSeed) -> Result<AlignmentResult, BwaError> {
+    fn build_alignment(
+        &self,
+        query: &[u8],
+        chain: &ChainedSeed,
+    ) -> Result<AlignmentResult, BwaError> {
         let ref_seq = &self.reference;
         let seed = &chain.mem;
         let query_len = query.len();
@@ -143,7 +151,10 @@ impl Aligner {
                     for i in 0..*len as usize {
                         let q_idx = q_pos + i;
                         let r_idx = r_pos + i;
-                        if q_idx < query.len() && r_idx < reference.len() && query[q_idx] != reference[r_idx] {
+                        if q_idx < query.len()
+                            && r_idx < reference.len()
+                            && query[q_idx] != reference[r_idx]
+                        {
                             nm += 1;
                         }
                     }
@@ -164,7 +175,13 @@ impl Aligner {
         nm
     }
 
-    fn compute_alignment_score(&self, cigar: &Cigar, query: &[u8], reference: &[u8], ref_start: usize) -> i32 {
+    fn compute_alignment_score(
+        &self,
+        cigar: &Cigar,
+        query: &[u8],
+        reference: &[u8],
+        ref_start: usize,
+    ) -> i32 {
         let mut score = 0i32;
         let mut q_pos = 0usize;
         let mut r_pos = ref_start;
@@ -187,11 +204,13 @@ impl Aligner {
                     r_pos += *len as usize;
                 }
                 CigarOp::I => {
-                    score -= self.scoring.gap_open + (*len as i32 - 1).max(0) * self.scoring.gap_extend;
+                    score -=
+                        self.scoring.gap_open + (*len as i32 - 1).max(0) * self.scoring.gap_extend;
                     q_pos += *len as usize;
                 }
                 CigarOp::D => {
-                    score -= self.scoring.gap_open + (*len as i32 - 1).max(0) * self.scoring.gap_extend;
+                    score -=
+                        self.scoring.gap_open + (*len as i32 - 1).max(0) * self.scoring.gap_extend;
                     r_pos += *len as usize;
                 }
                 _ => {}
@@ -200,7 +219,11 @@ impl Aligner {
         score
     }
 
-    pub fn align_paired(&self, read1: &[u8], read2: &[u8]) -> Result<(AlignmentResult, AlignmentResult), BwaError> {
+    pub fn align_paired(
+        &self,
+        read1: &[u8],
+        read2: &[u8],
+    ) -> Result<(AlignmentResult, AlignmentResult), BwaError> {
         let r1 = self.align_read(read1, Some(read2))?;
         let r2 = self.align_read(read2, Some(read1))?;
         Ok((r1, r2))
@@ -316,7 +339,9 @@ pub fn extend_seed_forward(
     for (_j, op_code) in &traceback {
         let op = match op_code {
             1 => {
-                if query[best_j.saturating_sub(1)] == reference[seed_start + best_j.saturating_sub(1)] {
+                if query[best_j.saturating_sub(1)]
+                    == reference[seed_start + best_j.saturating_sub(1)]
+                {
                     CigarOp::Eq
                 } else {
                     CigarOp::X
@@ -378,7 +403,10 @@ pub fn extend_seed_backward(
     let mut best_j = 0;
 
     for d in 0..=actual_bw {
-        for ref_pos in [seed_end.saturating_sub(d), seed_end.saturating_sub(d.saturating_sub(1).max(0))] {
+        for ref_pos in [
+            seed_end.saturating_sub(d),
+            seed_end.saturating_sub(d.saturating_sub(1).max(0)),
+        ] {
             if ref_pos == 0 || ref_pos >= ref_len {
                 continue;
             }
@@ -638,7 +666,8 @@ pub fn affine_extend_forward(
             let m_prev = dp.m_at(i - 1, j - 1);
             let x_prev = dp.x_at(i - 1, j - 1);
             let g_prev = dp.g_at(i - 1, j - 1);
-            let m_val = m_prev.saturating_add(match_score)
+            let m_val = m_prev
+                .saturating_add(match_score)
                 .max(x_prev.saturating_add(match_score))
                 .max(g_prev.saturating_add(match_score));
             dp.set_m(i, j, m_val);
@@ -857,7 +886,11 @@ mod tests {
         assert!(ext.score > 0, "Score should be positive for exact match");
         assert_eq!(ext.query_end, query.len());
         let cigar_str = ext.cigar.to_string();
-        assert!(cigar_str.contains('=') || cigar_str.contains('X'), "CIGAR should contain match ops: {}", cigar_str);
+        assert!(
+            cigar_str.contains('=') || cigar_str.contains('X'),
+            "CIGAR should contain match ops: {}",
+            cigar_str
+        );
     }
 
     #[test]
@@ -888,7 +921,10 @@ mod tests {
         assert!(scoring.gap_open > scoring.gap_extend);
         let single_gap_cost = scoring.gap_open as i32;
         let two_gap_cost = (scoring.gap_open + scoring.gap_extend) as i32;
-        assert!(single_gap_cost < two_gap_cost, "Single gap should cost less than two separate gaps");
+        assert!(
+            single_gap_cost < two_gap_cost,
+            "Single gap should cost less than two separate gaps"
+        );
     }
 
     #[test]
@@ -932,17 +968,28 @@ mod tests {
 
         // Use AC which we know works with the simple search test
         let query = vec![0, 1]; // AC
-        
+
         // Check if FM-index finds the pattern
         let positions = index_for_check.find_all(&query);
-        assert!(!positions.is_empty(), "FM-index should find AC positions: {:?}, ref_len: {}", positions, ref_data_len);
-        
+        assert!(
+            !positions.is_empty(),
+            "FM-index should find AC positions: {:?}, ref_len: {}",
+            positions,
+            ref_data_len
+        );
+
         let result = aligner.align_read(&query, None).unwrap();
 
         if result.cigar.ops.is_empty() {
-            panic!("CIGAR is empty - flag: {}, mapq: {}, score: {}", result.flag, result.mapq, result.score);
+            panic!(
+                "CIGAR is empty - flag: {}, mapq: {}, score: {}",
+                result.flag, result.mapq, result.score
+            );
         }
-        assert!(result.cigar.reference_length() > 0, "CIGAR should cover reference positions");
+        assert!(
+            result.cigar.reference_length() > 0,
+            "CIGAR should cover reference positions"
+        );
         // Score can be negative if extension introduces mismatches
         assert!(result.nm < u32::MAX as u32, "NM tag should be set");
     }
@@ -958,7 +1005,10 @@ mod tests {
         let query = vec![0, 1, 2, 3, 2]; // ACGTC
         let result = aligner.align_read(&query, None).unwrap();
 
-        assert!(result.cigar.to_string().len() > 0, "CIGAR should not be empty");
+        assert!(
+            result.cigar.to_string().len() > 0,
+            "CIGAR should not be empty"
+        );
     }
 
     #[test]
@@ -1106,6 +1156,10 @@ mod tests {
         if result.md_tag.is_none() {
             panic!("MD tag should be set for aligned reads");
         }
-        assert!(result.md_tag.as_ref().unwrap().starts_with("MD:Z:"), "{}", result.md_tag.unwrap());
+        assert!(
+            result.md_tag.as_ref().unwrap().starts_with("MD:Z:"),
+            "{}",
+            result.md_tag.unwrap()
+        );
     }
 }

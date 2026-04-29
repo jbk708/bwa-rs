@@ -27,23 +27,23 @@
 //! let results = aligner.align_read(&[0, 1, 2, 3, 0, 1, 2, 3], None)?;
 //! ```
 
+pub mod alignment;
+pub mod bam;
+pub mod chaining;
 pub mod error;
-pub mod types;
+pub mod fastq;
+pub mod fm_index;
+pub mod occ;
+pub mod paired;
 pub mod reference;
 pub mod sa;
-pub mod fm_index;
-pub mod seed;
-pub mod alignment;
-pub mod chaining;
 pub mod sam;
-pub mod bam;
-pub mod paired;
-pub mod fastq;
-pub mod occ;
+pub mod seed;
+pub mod types;
 
+pub use alignment::Aligner;
 pub use error::BwaError;
-pub use types::*;
+pub use fm_index::FMIndex;
 pub use reference::Reference;
 pub use sa::SuffixArray;
-pub use fm_index::FMIndex;
-pub use alignment::Aligner;
+pub use types::*;

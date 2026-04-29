@@ -115,7 +115,12 @@ impl Cigar {
     pub fn reference_length(&self) -> usize {
         self.ops
             .iter()
-            .filter(|(op, _)| matches!(op, CigarOp::M | CigarOp::D | CigarOp::N | CigarOp::Eq | CigarOp::X))
+            .filter(|(op, _)| {
+                matches!(
+                    op,
+                    CigarOp::M | CigarOp::D | CigarOp::N | CigarOp::Eq | CigarOp::X
+                )
+            })
             .map(|(_, len)| *len as usize)
             .sum()
     }
@@ -414,10 +419,10 @@ mod tests {
         // Ref:  A C T T A C (ref[2]=T mismatch, ref[3,4]=TA match, ref[5]=C del)
         let read = vec![0, 1, 2, 3, 0]; // ACGTA
         let reference = vec![0, 1, 3, 3, 0, 1]; // ACTTAC encoding: A=0,C=1,T=3,T=3,A=0,C=1
-        // After 2=: ref[0,1]=AC match, q_pos=2, r_pos=2
-        // 1X: ref[2]=T vs G mismatch, q_pos=3, r_pos=3
-        // 2=: ref[3,4]=TA match, q_pos=5, r_pos=5
-        // 1D: ref[5]=C deleted, r_pos=6
+                                                // After 2=: ref[0,1]=AC match, q_pos=2, r_pos=2
+                                                // 1X: ref[2]=T vs G mismatch, q_pos=3, r_pos=3
+                                                // 2=: ref[3,4]=TA match, q_pos=5, r_pos=5
+                                                // 1D: ref[5]=C deleted, r_pos=6
         let mdz = result.mdz_string(&read, &reference);
         assert_eq!(mdz, "2T2^C");
     }

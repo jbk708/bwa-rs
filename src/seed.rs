@@ -45,7 +45,8 @@ fn find_mems_recursive(
 
 pub fn filter_mems(mems: &mut Vec<MEM>) {
     mems.sort_by(|a, b| {
-        b.length.cmp(&a.length)
+        b.length
+            .cmp(&a.length)
             .then_with(|| a.ref_start.cmp(&b.ref_start))
     });
 
@@ -53,9 +54,9 @@ pub fn filter_mems(mems: &mut Vec<MEM>) {
     let mut used = Vec::new();
 
     for mem in mems.drain(..) {
-        let overlaps = used.iter().any(|u: &MEM| {
-            mem.ref_start < u.ref_end() && mem.ref_end() > u.ref_start
-        });
+        let overlaps = used
+            .iter()
+            .any(|u: &MEM| mem.ref_start < u.ref_end() && mem.ref_end() > u.ref_start);
 
         if !overlaps {
             filtered.push(mem.clone());
@@ -72,11 +73,7 @@ mod tests {
 
     #[test]
     fn test_filter_overlapping() {
-        let mut mems = vec![
-            MEM::new(0, 0, 10),
-            MEM::new(5, 5, 10),
-            MEM::new(20, 20, 8),
-        ];
+        let mut mems = vec![MEM::new(0, 0, 10), MEM::new(5, 5, 10), MEM::new(20, 20, 8)];
 
         filter_mems(&mut mems);
         assert_eq!(mems.len(), 2);

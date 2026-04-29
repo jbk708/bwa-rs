@@ -22,7 +22,11 @@ impl Reference {
     }
 
     pub fn as_slice(&self) -> Vec<u8> {
-        self.contigs.iter().flat_map(|c| c.bases.iter()).copied().collect()
+        self.contigs
+            .iter()
+            .flat_map(|c| c.bases.iter())
+            .copied()
+            .collect()
     }
 
     pub fn from_fasta(path: impl AsRef<std::path::Path>) -> Result<Self, BwaError> {
@@ -42,7 +46,10 @@ impl Reference {
             }
             if let Some(stripped) = line.strip_prefix('>') {
                 if !current_name.is_empty() {
-                    contigs.push(Sequence::new(&current_name, Self::encode_bases(&current_bases)?));
+                    contigs.push(Sequence::new(
+                        &current_name,
+                        Self::encode_bases(&current_bases)?,
+                    ));
                 }
                 current_name = stripped.split_whitespace().next().unwrap_or("").to_string();
                 if name.is_empty() {
@@ -55,7 +62,10 @@ impl Reference {
         }
 
         if !current_name.is_empty() {
-            contigs.push(Sequence::new(&current_name, Self::encode_bases(&current_bases)?));
+            contigs.push(Sequence::new(
+                &current_name,
+                Self::encode_bases(&current_bases)?,
+            ));
         }
 
         Ok(Self { name, contigs })

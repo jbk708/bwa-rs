@@ -49,7 +49,10 @@ impl RrrBitvec {
 #[cfg(test)]
 #[allow(dead_code)]
 fn naive_rank(seq: &[u8], c: u8, idx: usize) -> usize {
-    seq[..idx.min(seq.len())].iter().filter(|&&x| x == c).count()
+    seq[..idx.min(seq.len())]
+        .iter()
+        .filter(|&&x| x == c)
+        .count()
 }
 
 #[cfg(test)]
@@ -115,7 +118,9 @@ mod tests {
         let bwt: Vec<u8> = (0..n).map(|i| (i % 5) as u8).collect();
         let rrr = RrrBitvec::from_bwt(&bwt);
 
-        let rrr_bytes: usize = rrr.bitvecs.iter()
+        let rrr_bytes: usize = rrr
+            .bitvecs
+            .iter()
             .filter_map(|bv| bv.as_ref())
             .map(|bv| bv.heap_bytes())
             .sum();

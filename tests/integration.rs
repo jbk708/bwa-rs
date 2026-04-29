@@ -1,6 +1,6 @@
-use bwa_mem::{Aligner, BwaError, FMIndex, Reference};
 use bwa_mem::sam::{SAMHeader, SAMRecord};
 use bwa_mem::types::Sequence;
+use bwa_mem::{Aligner, BwaError, FMIndex, Reference};
 use std::process::Command;
 
 const TEST_REFERENCE: &str = ">test_ref\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n";
@@ -8,7 +8,15 @@ const TEST_REFERENCE: &str = ">test_ref\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACG
 const TEST_FASTQ: &str = "@read1\nACGTACGTACGTACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n@read2\nGGGGAAAACCCCAAAAGGGGAAAACCCC\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n@read3\nNNNNACGTACGTACGTNNNNACGTACGT\n+\nIIIIIIIIIIIIIIIIIIIIIIIIIIII\n";
 
 fn seq_to_bytes(s: &str) -> Vec<u8> {
-    s.bytes().map(|b| match b { b'A' => 0, b'C' => 1, b'G' => 2, b'T' => 3, _ => 4 }).collect()
+    s.bytes()
+        .map(|b| match b {
+            b'A' => 0,
+            b'C' => 1,
+            b'G' => 2,
+            b'T' => 3,
+            _ => 4,
+        })
+        .collect()
 }
 
 fn create_test_aligner() -> (Aligner, Reference) {
@@ -23,7 +31,9 @@ fn parse_fastq(data: &str) -> Vec<(String, Vec<u8>, Vec<u8>)> {
     let mut records = Vec::new();
     let mut lines = data.lines();
     while let Some(name) = lines.next() {
-        if !name.starts_with('@') { continue; }
+        if !name.starts_with('@') {
+            continue;
+        }
         let qname = name.trim_start_matches('@').to_string();
         let seq_line = lines.next().unwrap_or("");
         let _qual_header = lines.next().unwrap_or("");
@@ -48,32 +58,28 @@ fn validate_sam_record(line: &str) -> Result<(), BwaError> {
         return Err(BwaError::Parse("Empty QNAME".to_string()));
     }
 
-    let _flag: u16 = fields[1].parse().map_err(|_| {
-        BwaError::Parse(format!("Invalid FLAG: {}", fields[1]))
-    })?;
+    let _flag: u16 = fields[1]
+        .parse()
+        .map_err(|_| BwaError::Parse(format!("Invalid FLAG: {}", fields[1])))?;
 
     let rname = fields[2];
-    let pos: i64 = fields[3].parse().map_err(|_| {
-        BwaError::Parse(format!("Invalid POS: {}", fields[3]))
-    })?;
+    let pos: i64 = fields[3]
+        .parse()
+        .map_err(|_| BwaError::Parse(format!("Invalid POS: {}", fields[3])))?;
 
-    let mapq: u8 = fields[4].parse().map_err(|_| {
-        BwaError::Parse(format!("Invalid MAPQ: {}", fields[4]))
-    })?;
+    let mapq: u8 = fields[4]
+        .parse()
+        .map_err(|_| BwaError::Parse(format!("Invalid MAPQ: {}", fields[4])))?;
 
     let cigar = fields[5];
     validate_cigar(cigar)?;
 
     if rname == "*" && pos != 0 {
-        return Err(BwaError::Parse(
-            "RNAME=* but POS != 0".to_string(),
-        ));
+        return Err(BwaError::Parse("RNAME=* but POS != 0".to_string()));
     }
 
     if rname != "*" && pos == 0 {
-        return Err(BwaError::Parse(
-            "RNAME != * but POS == 0".to_string(),
-        ));
+        return Err(BwaError::Parse("RNAME != * but POS == 0".to_string()));
     }
 
     let _ = mapq;
@@ -104,17 +110,14 @@ fn validate_cigar(cigar: &str) -> Result<(), BwaError> {
             }
         }
 
-        let op = chars.next().ok_or_else(|| {
-            BwaError::Parse("CIGAR ends with number".to_string())
-        })?;
+        let op = chars
+            .next()
+            .ok_or_else(|| BwaError::Parse("CIGAR ends with number".to_string()))?;
 
         match op {
             'M' | 'I' | 'D' | 'N' | 'S' | 'H' | 'P' | '=' | 'X' => {}
             _ => {
-                return Err(BwaError::Parse(format!(
-                    "Invalid CIGAR operator: {}",
-                    op
-                )));
+                return Err(BwaError::Parse(format!("Invalid CIGAR operator: {}", op)));
             }
         }
     }
@@ -135,14 +138,18 @@ fn test_complete_alignment_pipeline() -> Result<(), BwaError> {
         let result = aligner.align_read(seq, None);
         let sequence = Sequence::new("query", seq.clone());
         let sam_record = match result {
-            Ok(alignment) => SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref"),
+            Ok(alignment) => {
+                SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref")
+            }
             Err(_) => SAMRecord::unmapped(qname, seq, qual),
         };
         sam_records.push(sam_record.to_string());
     }
 
     assert_eq!(sam_records.len(), 3);
-    for record in &sam_records { validate_sam_record(record)?; }
+    for record in &sam_records {
+        validate_sam_record(record)?;
+    }
     Ok(())
 }
 
@@ -156,7 +163,8 @@ fn test_sam_header_format() -> Result<(), BwaError> {
     let sequence = Sequence::new("query", seq.clone());
     let header = SAMHeader::new(reference.clone());
     let sam_header = header.to_string();
-    let sam_record = SAMRecord::from_alignment("test_read", &result, &sequence, &qual, &reference.name);
+    let sam_record =
+        SAMRecord::from_alignment("test_read", &result, &sequence, &qual, &reference.name);
 
     assert!(sam_header.starts_with("@HD"));
     assert!(sam_header.contains("@SQ\tSN:test_ref\tLN:144"));
@@ -184,7 +192,12 @@ fn test_perfect_match() -> Result<(), BwaError> {
     let fields: Vec<&str> = sam_str.split('\t').collect();
 
     assert_eq!(fields[2], "test_ref");
-    assert!(fields[5].contains('M') || fields[5].contains('=') || fields[5].contains('X') || fields[5] == "*");
+    assert!(
+        fields[5].contains('M')
+            || fields[5].contains('=')
+            || fields[5].contains('X')
+            || fields[5] == "*"
+    );
 
     Ok(())
 }
@@ -232,10 +245,7 @@ fn test_reference_sequence_encoding() -> Result<(), BwaError> {
         assert!(base <= 4, "Invalid base {} at position {}", base, i);
     }
 
-    let decoded: String = encoded
-        .iter()
-        .map(|&b| Reference::decode_base(b))
-        .collect();
+    let decoded: String = encoded.iter().map(|&b| Reference::decode_base(b)).collect();
 
     assert!(decoded.contains("ACGT"));
 
@@ -278,16 +288,33 @@ fn test_seq_to_bytes_all_bases() {
 
 #[test]
 fn test_cigar_validation() {
-    let valid_cigars = ["*", "10M", "5M2I3M", "10S4M", "2H3M1D4M2H", "10M1D10M", "5I5M5D5M", "4="];
+    let valid_cigars = [
+        "*",
+        "10M",
+        "5M2I3M",
+        "10S4M",
+        "2H3M1D4M2H",
+        "10M1D10M",
+        "5I5M5D5M",
+        "4=",
+    ];
 
     for cigar in valid_cigars {
-        assert!(validate_cigar(cigar).is_ok(), "CIGAR {} should be valid", cigar);
+        assert!(
+            validate_cigar(cigar).is_ok(),
+            "CIGAR {} should be valid",
+            cigar
+        );
     }
 
     let invalid_cigars = ["M10", "10", "5M2"];
 
     for cigar in invalid_cigars {
-        assert!(validate_cigar(cigar).is_err(), "CIGAR {} should be invalid", cigar);
+        assert!(
+            validate_cigar(cigar).is_err(),
+            "CIGAR {} should be invalid",
+            cigar
+        );
     }
 }
 
@@ -322,7 +349,12 @@ fn test_sam_record_fields() -> Result<(), BwaError> {
     assert!(fields.len() >= 11);
     assert_eq!(fields[0], "my_read");
     assert_eq!(fields[2], "ref");
-    assert!(fields[5] == "*" || fields[5].contains('M') || fields[5].contains('=') || fields[5].contains('X'));
+    assert!(
+        fields[5] == "*"
+            || fields[5].contains('M')
+            || fields[5].contains('=')
+            || fields[5].contains('X')
+    );
     Ok(())
 }
 
@@ -334,7 +366,10 @@ fn test_chr1_scaled_reference() -> Result<(), BwaError> {
     let mut full_seq = pattern.clone();
     full_seq.extend_from_slice(b"GGGGGGGGGGAAAAAAAA");
 
-    let reference = Reference::parse_fasta(&format!(">chr1\n{}", std::str::from_utf8(&full_seq).unwrap()))?;
+    let reference = Reference::parse_fasta(&format!(
+        ">chr1\n{}",
+        std::str::from_utf8(&full_seq).unwrap()
+    ))?;
     let total_len = reference.total_len();
     assert_eq!(total_len, ref_len + 18);
 
@@ -376,7 +411,10 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
     let reads_path = temp_dir.join("test_reads.fq");
 
     std::fs::write(&ref_path, TEST_REFERENCE.as_bytes())?;
-    std::fs::write(&reads_path, b"@ref_read\nACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIII\n")?;
+    std::fs::write(
+        &reads_path,
+        b"@ref_read\nACGTACGTACGTACGT\n+\nIIIIIIIIIIIIIIII\n",
+    )?;
 
     let reference = Reference::parse_fasta(TEST_REFERENCE)?;
     let ref_slice = reference.as_slice();
@@ -389,7 +427,11 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
     let result = aligner.align_read(&read, None)?;
 
     let bwa_output = Command::new(&bwa_path)
-        .args(["mem", ref_path.to_str().unwrap(), reads_path.to_str().unwrap()])
+        .args([
+            "mem",
+            ref_path.to_str().unwrap(),
+            reads_path.to_str().unwrap(),
+        ])
         .output()?;
 
     if !bwa_output.status.success() {
@@ -402,7 +444,8 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
 
     if let Some(bwa_record) = bwa_lines.first() {
         let bwa_fields: Vec<&str> = bwa_record.split('\t').collect();
-        let our_sam = SAMRecord::from_alignment("ref_read", &result, &sequence, &qual, "test_ref").to_string();
+        let our_sam = SAMRecord::from_alignment("ref_read", &result, &sequence, &qual, "test_ref")
+            .to_string();
         let our_fields: Vec<&str> = our_sam.split('\t').collect();
 
         assert_eq!(our_fields[0], bwa_fields[0], "QNAME should match");
@@ -431,7 +474,9 @@ fn test_sam_format_complete() -> Result<(), BwaError> {
         let result = aligner.align_read(seq, None);
         let sequence = Sequence::new(qname, seq.clone());
         let sam_record = match result {
-            Ok(alignment) => SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref"),
+            Ok(alignment) => {
+                SAMRecord::from_alignment(qname, &alignment, &sequence, qual, "test_ref")
+            }
             Err(_) => SAMRecord::unmapped(qname, seq, qual),
         };
         output.push_str(&sam_record.to_string());
@@ -454,7 +499,10 @@ fn test_sam_format_complete() -> Result<(), BwaError> {
     assert_eq!(line_count, 3, "Should have 3 alignment records");
 
     assert!(output.contains("@HD\tVN:"), "Missing @HD header");
-    assert!(output.contains("@SQ\tSN:test_ref\tLN:144"), "Missing @SQ header");
+    assert!(
+        output.contains("@SQ\tSN:test_ref\tLN:144"),
+        "Missing @SQ header"
+    );
     assert!(output.contains("@PG"), "Missing @PG header");
 
     Ok(())

@@ -17,9 +17,8 @@ const BGZF_FEXTRA_LEN: u16 = 6;
 const BGZF_FEXTRA_ID: [u8; 2] = [b'B', b'C'];
 const BAM_HEADER_MAGIC: [u8; 4] = [b'B', b'A', b'M', b'\x01'];
 const EOF_MARKER: [u8; 28] = [
-    0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xff, 0xff,
-    0x00, 0x00, 0x00, 0x00,
+    0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
 ];
 
 fn generate_header_text(reference: &Reference) -> String {
@@ -171,7 +170,15 @@ impl<W: Write> BAMWriter<W> {
 
         let n_cigar = Self::count_cigar_ops(&record.cigar) as u32;
 
-        let unrolled_data_len = 4 + 4 + 2 + 4 + 4 + 4 + 4 + 4 + 4
+        let unrolled_data_len = 4
+            + 4
+            + 2
+            + 4
+            + 4
+            + 4
+            + 4
+            + 4
+            + 4
             + l_qname as usize
             + (l_seq as usize * 2)
             + qual_bytes.len()
@@ -342,7 +349,10 @@ mod tests {
 
     #[test]
     fn test_encode_seq() {
-        assert_eq!(BAMWriter::<std::io::Sink>::encode_seq("ACGT"), vec![0x12, 0x48]);
+        assert_eq!(
+            BAMWriter::<std::io::Sink>::encode_seq("ACGT"),
+            vec![0x12, 0x48]
+        );
         assert_eq!(BAMWriter::<std::io::Sink>::encode_seq("A"), vec![0x10]);
         assert_eq!(BAMWriter::<std::io::Sink>::encode_seq("AC"), vec![0x12]);
     }

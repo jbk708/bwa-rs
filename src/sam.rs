@@ -53,8 +53,17 @@ impl fmt::Display for SAMRecord {
         write!(
             f,
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.qname, self.flag, self.rname, self.pos, self.mapq, self.cigar,
-            self.rnext, self.pnext, self.tlen, self.seq, self.qual,
+            self.qname,
+            self.flag,
+            self.rname,
+            self.pos,
+            self.mapq,
+            self.cigar,
+            self.rnext,
+            self.pnext,
+            self.tlen,
+            self.seq,
+            self.qual,
         )?;
         if let Some(ref md) = self.md_tag {
             write!(f, "\t{}", md)?;
@@ -101,8 +110,7 @@ impl SAMRecord {
         qual: &[u8],
         contig_name: &str,
     ) -> Self {
-        let flag = alignment.flag
-            | if alignment.reverse_strand { 0x10 } else { 0 };
+        let flag = alignment.flag | if alignment.reverse_strand { 0x10 } else { 0 };
 
         let (rname, pos, cigar) = if flag & 0x4 != 0 {
             ("*".to_string(), 0, "*".to_string())
@@ -115,21 +123,47 @@ impl SAMRecord {
         };
 
         let mut record = Self::new(
-            qname.to_string(), flag, rname, pos, alignment.mapq, cigar,
-            "*".to_string(), 0, 0,
+            qname.to_string(),
+            flag,
+            rname,
+            pos,
+            alignment.mapq,
+            cigar,
+            "*".to_string(),
+            0,
+            0,
             Reference::decode_sequence(&seq.bases),
-            if qual.is_empty() { "*".to_string() } else { String::from_utf8_lossy(qual).to_string() },
+            if qual.is_empty() {
+                "*".to_string()
+            } else {
+                String::from_utf8_lossy(qual).to_string()
+            },
         );
-        record.md_tag = if flag & 0x4 != 0 { None } else { alignment.md_tag.clone() };
+        record.md_tag = if flag & 0x4 != 0 {
+            None
+        } else {
+            alignment.md_tag.clone()
+        };
         record
     }
 
     pub fn unmapped(qname: &str, seq: &[u8], qual: &[u8]) -> Self {
         Self::new(
-            qname.to_string(), 0x4, "*".to_string(), 0, 0, "*".to_string(),
-            "*".to_string(), 0, 0,
+            qname.to_string(),
+            0x4,
+            "*".to_string(),
+            0,
+            0,
+            "*".to_string(),
+            "*".to_string(),
+            0,
+            0,
             Reference::decode_sequence(seq),
-            if qual.is_empty() { "*".to_string() } else { String::from_utf8_lossy(qual).to_string() },
+            if qual.is_empty() {
+                "*".to_string()
+            } else {
+                String::from_utf8_lossy(qual).to_string()
+            },
         )
     }
 }
@@ -141,7 +175,10 @@ pub struct SAMWriter {
 
 impl SAMWriter {
     pub fn new(write: Box<dyn Write>, reference: Reference) -> io::Result<Self> {
-        let mut sam_writer = Self { writer: write, header: SAMHeader::new(reference) };
+        let mut sam_writer = Self {
+            writer: write,
+            header: SAMHeader::new(reference),
+        };
         sam_writer.write_header()?;
         Ok(sam_writer)
     }
@@ -185,9 +222,17 @@ mod tests {
     #[test]
     fn test_record_to_string() {
         let record = SAMRecord::new(
-            "read1".to_string(), 0, "chr1".to_string(), 100, 60,
-            "10M".to_string(), "*".to_string(), 0, 0,
-            "ACGTACGT".to_string(), "IIIIIIII".to_string(),
+            "read1".to_string(),
+            0,
+            "chr1".to_string(),
+            100,
+            60,
+            "10M".to_string(),
+            "*".to_string(),
+            0,
+            0,
+            "ACGTACGT".to_string(),
+            "IIIIIIII".to_string(),
         );
         let line = record.to_string();
         assert!(line.starts_with("read1"));
@@ -197,9 +242,17 @@ mod tests {
     #[test]
     fn test_sam_record_fields() {
         let record = SAMRecord::new(
-            "read1".to_string(), 99, "chr1".to_string(), 1000, 30,
-            "50M".to_string(), "=".to_string(), 1050, 100,
-            "ACGT".to_string(), "!@#$".to_string(),
+            "read1".to_string(),
+            99,
+            "chr1".to_string(),
+            1000,
+            30,
+            "50M".to_string(),
+            "=".to_string(),
+            1050,
+            100,
+            "ACGT".to_string(),
+            "!@#$".to_string(),
         );
         assert_eq!(record.flag, 99);
         assert_eq!(record.pos, 1000);

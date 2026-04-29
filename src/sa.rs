@@ -88,8 +88,11 @@ impl SuffixArray {
         // key_bound = 256 for byte alphabet
         let sa_usize: Vec<usize> = sa_is::make_suffix_array(sequence, 256);
         let sa: Vec<u32> = sa_usize.into_iter().map(|x| x as u32).collect();
-        
-        Self { sa, len: sequence.len() }
+
+        Self {
+            sa,
+            len: sequence.len(),
+        }
     }
 
     pub fn get(&self, idx: usize) -> Option<u32> {
@@ -133,9 +136,9 @@ pub fn build_sa_streaming<'a>(
 where
     &'a [u8]: 'a,
 {
-    sequence.chunks(chunk_size).map(|chunk| {
-        SuffixArray::build(chunk).sa
-    })
+    sequence
+        .chunks(chunk_size)
+        .map(|chunk| SuffixArray::build(chunk).sa)
 }
 
 pub fn build_sa_with_sentinel(sequence: &[u8]) -> Vec<u32> {
@@ -294,7 +297,7 @@ mod tests {
         let seq = b"ACGTACGTACGT";
         let chunks: Vec<_> = build_sa_streaming(seq, 4).collect();
         assert_eq!(chunks.len(), 3);
-        
+
         for chunk in &chunks {
             assert!(!chunk.is_empty());
         }
@@ -405,7 +408,11 @@ mod tests {
             let seq: Vec<u8> = (0..len).map(|i| [b'A', b'C', b'G', b'T'][i % 4]).collect();
             let sa = build_sa_integer(&seq);
             assert_eq!(sa.len(), len, "SA length mismatch for len={}", len);
-            assert!(verify_sa(&seq, &sa), "SA verification failed for len={}", len);
+            assert!(
+                verify_sa(&seq, &sa),
+                "SA verification failed for len={}",
+                len
+            );
         }
     }
 
@@ -442,10 +449,10 @@ mod tests {
         let seq = b"ACGTACGT";
         let sa_byte = SuffixArray::build(seq);
         let sa_int = build_sa_integer(seq);
-        
+
         // Both should have the same length
         assert_eq!(sa_byte.len(), sa_int.len());
-        
+
         // Both should be valid suffix arrays
         let vals_byte: Vec<u32> = sa_byte.into_iter().collect();
         assert!(verify_sa(seq, &vals_byte));

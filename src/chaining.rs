@@ -77,10 +77,7 @@ mod tests {
 
     #[test]
     fn test_chain_overlapping_seeds() {
-        let seeds = vec![
-            MEM::new(0, 100, 30),
-            MEM::new(20, 120, 25),
-        ];
+        let seeds = vec![MEM::new(0, 100, 30), MEM::new(20, 120, 25)];
 
         let chains = chain_seeds(&seeds, 100.0);
         assert!(!chains.is_empty());

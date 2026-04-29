@@ -1,9 +1,9 @@
 //! FM-Index implementation for fast substring search.
 
-use std::path::Path;
-use std::io::{Read, Write};
 use std::fs::File;
 use std::io;
+use std::io::{Read, Write};
+use std::path::Path;
 
 use crate::error::BwaError;
 use crate::reference::Reference;
@@ -85,13 +85,17 @@ impl OccTable {
                 last_sample = total;
             }
         }
-        
+
         // Push the final sample if there were any characters processed
         if !bwt_vec.is_empty() {
             counts.push(total);
         }
 
-        Self { counts, sample_rate, bwt: bwt_vec }
+        Self {
+            counts,
+            sample_rate,
+            bwt: bwt_vec,
+        }
     }
 
     pub fn occ(&self, c: u8, idx: usize) -> u32 {
@@ -106,7 +110,11 @@ impl OccTable {
             [0; 5]
         };
 
-        let start = if sample_idx == 0 { 0 } else { sample_idx * self.sample_rate + 1 };
+        let start = if sample_idx == 0 {
+            0
+        } else {
+            sample_idx * self.sample_rate + 1
+        };
         for i in start..idx {
             if i < self.bwt.len() && self.bwt[i] == c {
                 total[c as usize] += 1;
@@ -123,7 +131,7 @@ impl OccTable {
     fn read_from(reader: &mut impl Read, sample_rate: usize, bwt_len: usize) -> io::Result<Self> {
         let mut bwt = vec![0u8; bwt_len];
         reader.read_exact(&mut bwt)?;
-        
+
         // Recreate the occurrence table from the BWT
         let mut counts = Vec::new();
         let mut total = [0u32; 5];
@@ -138,12 +146,16 @@ impl OccTable {
                 last_sample = total;
             }
         }
-        
+
         if !bwt.is_empty() {
             counts.push(total);
         }
 
-        Ok(Self { counts, sample_rate, bwt })
+        Ok(Self {
+            counts,
+            sample_rate,
+            bwt,
+        })
     }
 }
 
@@ -222,9 +234,7 @@ impl FMIndex {
 
     pub fn find_all(&self, pattern: &[u8]) -> Vec<u32> {
         let (left, right) = self.search(pattern);
-        (left..right)
-            .filter_map(|i| self.sa.get(i))
-            .collect()
+        (left..right).filter_map(|i| self.sa.get(i)).collect()
     }
 
     pub fn save(&self, path: &Path) -> Result<(), BwaError> {
@@ -298,26 +308,25 @@ impl FMIndex {
 mod tests {
     use super::*;
 
-
     #[test]
     fn test_suffix_array() {
         let seq = b"AACGAACGG";
         let sa = SuffixArray::build(seq);
         assert_eq!(sa.len(), 9);
-        
+
         // Check SA contains expected positions
         let positions: Vec<u32> = (0..9).filter_map(|i| sa.get(i)).collect();
         assert_eq!(positions.len(), 9);
     }
-    
+
     #[test]
     fn test_suffix_array_order() {
         let seq = vec![0u8, 1, 2, 3, 0, 1, 2, 3]; // ACGTACGT
         let sa = SuffixArray::build(&seq);
-        
+
         // Check that SA is sorted correctly
         let sa_vals: Vec<u32> = (0..8).filter_map(|i| sa.get(i)).collect();
-        
+
         // The suffixes should be sorted:
         // Position 4: ACGT (shorter, comes first)
         // Position 0: ACGTACGT
@@ -336,7 +345,7 @@ mod tests {
         let sa = SuffixArray::build(&seq);
         let bwt = BWT::from_sa(&seq, &sa);
         assert_eq!(bwt.len(), 8);
-        
+
         // SA = [4, 0, 5, 1, 6, 2, 7, 3]
         // For pos=4: sequence[3] = 3 (T), so BWT[0] = 3
         // For pos=0: push 4 (sentinel), so BWT[1] = 4
@@ -352,56 +361,94 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
         let index = FMIndex::build(&ref_seq);
         assert_eq!(index.len, 8);
-        
+
         // Check search range for single character T
         let (left, right) = index.search(&[3]); // T
-        assert!(left < right, "Search for T should find matches: ({}, {})", left, right);
-        
+        assert!(
+            left < right,
+            "Search for T should find matches: ({}, {})",
+            left,
+            right
+        );
+
         let positions = index.find_all(&[3]);
-        assert!(!positions.is_empty(), "FM-index should find T, got: {:?}", positions);
-        
+        assert!(
+            !positions.is_empty(),
+            "FM-index should find T, got: {:?}",
+            positions
+        );
+
         // Now search for G
         let (left_g, right_g) = index.search(&[2]); // G
-        assert!(left_g < right_g, "Search for G should find matches: ({}, {})", left_g, right_g);
-        
+        assert!(
+            left_g < right_g,
+            "Search for G should find matches: ({}, {})",
+            left_g,
+            right_g
+        );
+
         // Search for GT (last two chars)
         let (left_tg, right_tg) = index.search(&[2, 3]); // GT
-        assert!(left_tg < right_tg, "Search for GT should find matches: ({}, {})", left_tg, right_tg);
-        
+        assert!(
+            left_tg < right_tg,
+            "Search for GT should find matches: ({}, {})",
+            left_tg,
+            right_tg
+        );
+
         // Search for AC (first two chars)
         let (left_ac, right_ac) = index.search(&[0, 1]); // AC
-        assert!(left_ac < right_ac, "Search for AC should find matches: ({}, {})", left_ac, right_ac);
-        
+        assert!(
+            left_ac < right_ac,
+            "Search for AC should find matches: ({}, {})",
+            left_ac,
+            right_ac
+        );
+
         // Search for CG (middle two chars)
         let (left_cg, right_cg) = index.search(&[1, 2]); // CG
-        assert!(left_cg < right_cg, "Search for CG should find matches: ({}, {})", left_cg, right_cg);
+        assert!(
+            left_cg < right_cg,
+            "Search for CG should find matches: ({}, {})",
+            left_cg,
+            right_cg
+        );
     }
-    
+
     #[test]
     fn test_simple_search() {
         // Test with a simple sequence ACAC
         let ref_seq = Reference::parse_fasta(">test\nACAC").unwrap();
         let index = FMIndex::build(&ref_seq);
-        
+
         // Manually trace through the search for AC
         // First search for C (pattern[1] = 1)
         let (c_left, c_right) = index.search(&[1]);
-        assert!(c_left < c_right, "C search failed: ({}, {})", c_left, c_right);
-        
+        assert!(
+            c_left < c_right,
+            "C search failed: ({}, {})",
+            c_left,
+            c_right
+        );
+
         // Now search for AC - should use C result as starting point
         let pattern = vec![0, 1]; // AC
         let (left, right) = index.search(&pattern);
         assert!(left < right, "AC search failed: ({}, {})", left, right);
-        
+
         let positions = index.find_all(&pattern);
-        assert!(!positions.is_empty(), "FM-index should find AC in ACAC, got: {:?}", positions);
+        assert!(
+            !positions.is_empty(),
+            "FM-index should find AC in ACAC, got: {:?}",
+            positions
+        );
     }
-    
+
     #[test]
     fn test_occ_directly() {
         let ref_seq = Reference::parse_fasta(">test\nACAC").unwrap();
         let index = FMIndex::build(&ref_seq);
-        
+
         // Check BWT directly - it should be [1, 4, 0, 0]
         // For ACAC: SA=[2, 0, 3, 1], BWT[0]=sequence[1]=C=1, BWT[1]=4, BWT[2]=sequence[2]=A=0, BWT[3]=sequence[0]=A=0
         let bwt_slice = index.bwt.as_slice();
@@ -410,18 +457,30 @@ mod tests {
         assert_eq!(bwt_slice[1], 4, "BWT[1] should be 4 (sentinel)");
         assert_eq!(bwt_slice[2], 0, "BWT[2] should be 0 (A)");
         assert_eq!(bwt_slice[3], 0, "BWT[3] should be 0 (A)");
-        
+
         // Debug: check the counts array
-        assert_eq!(index.occ.counts.len(), 2, "Should have 2 samples: initial and final");
-        assert_eq!(index.occ.counts[0], [0, 0, 0, 0, 0], "First sample should be all zeros");
-        assert_eq!(index.occ.counts[1], [2, 1, 0, 0, 0], "Second sample should be final counts");
-        
+        assert_eq!(
+            index.occ.counts.len(),
+            2,
+            "Should have 2 samples: initial and final"
+        );
+        assert_eq!(
+            index.occ.counts[0],
+            [0, 0, 0, 0, 0],
+            "First sample should be all zeros"
+        );
+        assert_eq!(
+            index.occ.counts[1],
+            [2, 1, 0, 0, 0],
+            "Second sample should be final counts"
+        );
+
         // Check occ at intermediate positions
         assert_eq!(index.occ.occ(0, 1), 0, "occ(A, 1) should be 0");
         assert_eq!(index.occ.occ(0, 2), 0, "occ(A, 2) should be 0");
         assert_eq!(index.occ.occ(0, 3), 1, "occ(A, 3) should be 1");
         assert_eq!(index.occ.occ(0, 4), 2, "occ(A, 4) should be 2");
-        
+
         // Check occ for C
         assert_eq!(index.occ.occ(1, 1), 1, "occ(C, 1) should be 1");
         assert_eq!(index.occ.occ(1, 4), 1, "occ(C, 4) should be 1");
@@ -442,7 +501,10 @@ mod tests {
 
         let pattern = [0, 1]; // AC
         let original_positions = original.find_all(&pattern);
-        assert!(!original_positions.is_empty(), "Original should find AC pattern");
+        assert!(
+            !original_positions.is_empty(),
+            "Original should find AC pattern"
+        );
 
         let temp_path = std::env::temp_dir().join("test_index.idx");
         original.save(&temp_path).unwrap();
@@ -459,7 +521,9 @@ mod tests {
     #[test]
     fn test_save_load_large() {
         let seq = b"ACGT".repeat(1000);
-        let reference = Reference::parse_fasta(&(">test\n".to_string() + &String::from_utf8(seq).unwrap())).unwrap();
+        let reference =
+            Reference::parse_fasta(&(">test\n".to_string() + &String::from_utf8(seq).unwrap()))
+                .unwrap();
         let original = FMIndex::build(&reference);
 
         let pattern = [0, 1, 2];
@@ -503,7 +567,11 @@ mod tests {
     #[test]
     fn test_load_corrupted() {
         let temp_path = std::env::temp_dir().join("test_corrupt.idx");
-        std::fs::write(&temp_path, b"BWAIDX\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00").ok();
+        std::fs::write(
+            &temp_path,
+            b"BWAIDX\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+        )
+        .ok();
 
         let result = FMIndex::load(&temp_path);
         assert!(result.is_err());

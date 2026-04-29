@@ -23,7 +23,7 @@ impl WaveletTree {
         }
 
         let data: Vec<u64> = bwt.iter().map(|&c| c as u64).collect();
-        
+
         // Handle single-element case - pad with different value
         if n == 1 {
             let sentinel = if data[0] == u64::MAX { 0 } else { data[0] + 1 };
@@ -47,7 +47,11 @@ impl WaveletTree {
         }
 
         let wm = WaveletMatrix::new(&data);
-        Self { wm, len: n, is_padded: false }
+        Self {
+            wm,
+            len: n,
+            is_padded: false,
+        }
     }
 
     pub fn rank(&self, c: u8, idx: usize) -> usize {
@@ -69,7 +73,10 @@ impl WaveletTree {
 #[cfg(test)]
 #[allow(dead_code)]
 fn naive_rank(seq: &[u8], c: u8, idx: usize) -> usize {
-    seq[..idx.min(seq.len())].iter().filter(|&&x| x == c).count()
+    seq[..idx.min(seq.len())]
+        .iter()
+        .filter(|&&x| x == c)
+        .count()
 }
 
 #[cfg(test)]
@@ -85,7 +92,11 @@ mod tests {
             for k in 0..=bwt.len() {
                 let expected = naive_rank(&bwt, c, k);
                 let got = wt.rank(c, k);
-                assert_eq!(got, expected, "rank({}, {}) = {} != {}", c, k, got, expected);
+                assert_eq!(
+                    got, expected,
+                    "rank({}, {}) = {} != {}",
+                    c, k, got, expected
+                );
             }
         }
     }
@@ -99,7 +110,11 @@ mod tests {
             for k in 0..=bwt.len() {
                 let expected = naive_rank(&bwt, c, k);
                 let got = wt.rank(c, k);
-                assert_eq!(got, expected, "rank({}, {}) = {} != {}", c, k, got, expected);
+                assert_eq!(
+                    got, expected,
+                    "rank({}, {}) = {} != {}",
+                    c, k, got, expected
+                );
             }
         }
     }
@@ -150,7 +165,11 @@ mod tests {
             let k = (i * 31 + 7) % 1001;
             let expected = naive_rank(&bwt, c, k);
             let got = wt.rank(c, k);
-            assert_eq!(got, expected, "rank({}, {}) = {} != {}", c, k, got, expected);
+            assert_eq!(
+                got, expected,
+                "rank({}, {}) = {} != {}",
+                c, k, got, expected
+            );
         }
     }
 }
