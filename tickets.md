@@ -7,8 +7,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | 🟡 In Progress | 0 |
-| ⬜ Pending | 8 |
-| ✅ Done | 2 |
+| ⬜ Pending | 7 |
+| ✅ Done | 3 |
 | **Total** | **10** |
 
 ---
@@ -51,12 +51,14 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 **Notes:** Using the `wavelet-matrix` crate for efficient rank queries. The wrapper handles edge cases (empty, single-element, all-same sequences).
 
 ### T28: RRR / SDArray
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** Succinct bitvectors for rank queries.
 **Deliverables:**
-- [ ] RRR bitvector implementation
-- [ ] popcount-based occ queries
-- [ ] 2-3x compression vs raw counts
+- [x] RRR bitvector implementation
+- [x] popcount-based occ queries
+- [x] 2-3x compression vs raw counts
+
+**Notes:** Using the `succinct` crate's `Rank9` structure. Each character in the alphabet (A, C, G, T, N) has its own bitvector with O(1) rank queries. Compression ratio is ~10x for sparse character distributions, better for denser ones.
 
 ---
 

@@ -66,6 +66,8 @@ impl WaveletTree {
     }
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
 fn naive_rank(seq: &[u8], c: u8, idx: usize) -> usize {
     seq[..idx.min(seq.len())].iter().filter(|&&x| x == c).count()
 }
