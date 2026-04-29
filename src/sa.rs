@@ -1,8 +1,76 @@
 //! Suffix Array construction module using SA-IS algorithm.
 //!
-//! This module provides O(n) suffix array construction via the sa-is crate.
+//! This module provides O(n) suffix array construction via the sa-is crate
+//! and integer alphabet support via libsais-rs for efficient radix sorting.
 
 use std::io::{Read, Write};
+
+/// Encode a DNA sequence as integers: A=0, C=1, G=2, T=3, N=4
+/// This enables efficient integer-based suffix array construction.
+pub fn encode_sequence(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .map(|&b| match b.to_ascii_uppercase() {
+            b'A' => 0,
+            b'C' => 1,
+            b'G' => 2,
+            b'T' => 3,
+            b'N' => 4,
+            _ => 4,
+        })
+        .collect()
+}
+
+/// Encode a DNA sequence as u16 integers for larger alphabets.
+pub fn encode_sequence_u16(seq: &[u8]) -> Vec<u16> {
+    seq.iter()
+        .map(|&b| match b.to_ascii_uppercase() {
+            b'A' => 0,
+            b'C' => 1,
+            b'G' => 2,
+            b'T' => 3,
+            b'N' => 4,
+            _ => 4,
+        })
+        .collect()
+}
+
+/// Build suffix array using integer alphabet via libsais-rs.
+/// Returns indices into the original sequence.
+pub fn build_sa_integer(seq: &[u8]) -> Vec<u32> {
+    if seq.is_empty() {
+        return vec![];
+    }
+    let encoded = encode_sequence(seq);
+    let n = encoded.len();
+    let mut sa = vec![0i32; n];
+    // k=5 for 5-symbol alphabet (A,C,G,T,N), fs=0, freq=None
+    libsais_rs::libsais(&encoded, &mut sa, 0, None);
+    sa.into_iter().map(|x| x as u32).collect()
+}
+
+/// Build suffix array from pre-encoded integer sequence.
+pub fn build_sa_from_encoded(encoded: &[u8]) -> Vec<u32> {
+    if encoded.is_empty() {
+        return vec![];
+    }
+    let n = encoded.len();
+    let mut sa = vec![0i32; n];
+    libsais_rs::libsais(encoded, &mut sa, 0, None);
+    sa.into_iter().map(|x| x as u32).collect()
+}
+
+/// Build suffix array using i32-encoded integer alphabet.
+pub fn build_sa_i32(encoded: &[i32], alphabet_size: i32) -> Vec<u32> {
+    if encoded.is_empty() {
+        return vec![];
+    }
+    let n = encoded.len();
+    let mut sa = vec![0i32; n];
+    let mut encoded_i32 = encoded.to_vec();
+    // k = alphabet size, fs = 0
+    libsais_rs::libsais_int(&mut encoded_i32, &mut sa, alphabet_size, 0);
+    sa.into_iter().map(|x| x as u32).collect()
+}
 
 #[derive(Clone, Debug)]
 pub struct SuffixArray {
@@ -256,5 +324,139 @@ mod tests {
             let vals: Vec<u32> = sa.into_iter().collect();
             assert!(verify_sa(&seq, &vals), "SA for len={} should be valid", len);
         }
+    }
+
+    // Integer alphabet encoding tests
+    #[test]
+    fn test_encode_sequence_basic() {
+        let seq = b"ACGT";
+        let encoded = encode_sequence(seq);
+        assert_eq!(encoded, &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_encode_sequence_with_n() {
+        let seq = b"ACGNACGT";
+        let encoded = encode_sequence(seq);
+        assert_eq!(encoded, &[0, 1, 2, 4, 0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_encode_sequence_lowercase() {
+        let seq = b"acgt";
+        let encoded = encode_sequence(seq);
+        assert_eq!(encoded, &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_encode_sequence_empty() {
+        let seq: &[u8] = b"";
+        let encoded = encode_sequence(seq);
+        assert!(encoded.is_empty());
+    }
+
+    #[test]
+    fn test_encode_sequence_unknown_char() {
+        let seq = b"ACXGT";
+        let encoded = encode_sequence(seq);
+        assert_eq!(encoded, &[0, 1, 4, 2, 3]);
+    }
+
+    #[test]
+    fn test_build_sa_integer_small() {
+        let seq = b"ACGT";
+        let sa = build_sa_integer(seq);
+        assert_eq!(sa.len(), 4);
+        assert!(verify_sa(seq, &sa));
+    }
+
+    #[test]
+    fn test_build_sa_integer_medium() {
+        let seq = b"AACGAACGG";
+        let sa = build_sa_integer(seq);
+        assert_eq!(sa.len(), 9);
+        assert!(verify_sa(seq, &sa));
+    }
+
+    #[test]
+    fn test_build_sa_integer_repeated() {
+        let seq = b"AAAA";
+        let sa = build_sa_integer(seq);
+        assert_eq!(sa.len(), 4);
+        assert!(verify_sa(seq, &sa));
+    }
+
+    #[test]
+    fn test_build_sa_from_encoded() {
+        let encoded = &[0u8, 1, 2, 3]; // ACGT
+        let sa = build_sa_from_encoded(encoded);
+        assert_eq!(sa.len(), 4);
+        // Verify by checking that encoded[sa[i]..] < encoded[sa[i+1]..]
+        for i in 0..sa.len().saturating_sub(1) {
+            let idx1 = sa[i] as usize;
+            let idx2 = sa[i + 1] as usize;
+            assert!(encoded[idx1..].cmp(&encoded[idx2..]) == std::cmp::Ordering::Less);
+        }
+    }
+
+    #[test]
+    fn test_build_sa_integer_consistency() {
+        for len in [1, 2, 5, 10, 20, 50, 100] {
+            let seq: Vec<u8> = (0..len).map(|i| [b'A', b'C', b'G', b'T'][i % 4]).collect();
+            let sa = build_sa_integer(&seq);
+            assert_eq!(sa.len(), len, "SA length mismatch for len={}", len);
+            assert!(verify_sa(&seq, &sa), "SA verification failed for len={}", len);
+        }
+    }
+
+    #[test]
+    fn test_build_sa_integer_empty() {
+        let seq: &[u8] = b"";
+        let sa = build_sa_integer(seq);
+        assert!(sa.is_empty());
+    }
+
+    #[test]
+    fn test_encode_sequence_u16() {
+        let seq = b"ACGT";
+        let encoded = encode_sequence_u16(seq);
+        assert_eq!(encoded, &[0u16, 1, 2, 3]);
+    }
+
+    #[test]
+    fn test_build_sa_i32() {
+        let encoded = vec![0i32, 1, 2, 3];
+        let sa = build_sa_i32(&encoded, 5);
+        assert_eq!(sa.len(), 4);
+        // Verify suffix array is correct for integer sequence
+        for i in 0..sa.len().saturating_sub(1) {
+            let idx1 = sa[i] as usize;
+            let idx2 = sa[i + 1] as usize;
+            assert!(encoded[idx1..].cmp(&encoded[idx2..]) == std::cmp::Ordering::Less);
+        }
+    }
+
+    #[test]
+    fn test_integer_vs_byte_sa_equivalence() {
+        // Both methods should produce the same suffix array
+        let seq = b"ACGTACGT";
+        let sa_byte = SuffixArray::build(seq);
+        let sa_int = build_sa_integer(seq);
+        
+        // Both should have the same length
+        assert_eq!(sa_byte.len(), sa_int.len());
+        
+        // Both should be valid suffix arrays
+        let vals_byte: Vec<u32> = sa_byte.into_iter().collect();
+        assert!(verify_sa(seq, &vals_byte));
+        assert!(verify_sa(seq, &sa_int));
+    }
+
+    #[test]
+    fn test_large_sequence_integer() {
+        let seq: Vec<u8> = b"ACGT".repeat(100);
+        let sa = build_sa_integer(&seq);
+        assert_eq!(sa.len(), 400);
+        assert!(verify_sa(&seq, &sa));
     }
 }
