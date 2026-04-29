@@ -4,6 +4,7 @@ use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
 use crate::seed::{find_mems, filter_mems, DEFAULT_MIN_SEED_LEN};
+use crate::reference::Reference;
 use crate::types::{AlignmentResult, Cigar, CigarOp, ChainedSeed, MEM};
 
 #[derive(Clone, Debug)]
@@ -120,11 +121,13 @@ impl Aligner {
 
         let nm = self.compute_nm(&cigar, query, ref_seq, ref_start);
         let score = self.compute_alignment_score(&cigar, query, ref_seq, ref_start);
+        let md_tag = mdz_string(&cigar, query, ref_seq, ref_start);
 
         let mut result = AlignmentResult::new(ref_start, cigar);
         result.score = score;
         result.nm = nm;
         result.mapq = self.calculate_mapq(std::slice::from_ref(&chain.mem), score);
+        result.md_tag = Some(md_tag);
 
         Ok(result)
     }
@@ -212,6 +215,7 @@ impl Aligner {
             reverse_strand: false,
             nm: 0,
             score: 0,
+            md_tag: None,
         }
     }
 
@@ -452,6 +456,82 @@ pub fn extend_seed_backward(
 
 pub fn optimal_bandwidth(query_len: usize) -> usize {
     (16 + query_len / 2).min(256)
+}
+
+/// Generate MD:Z tag for mismatch annotation.
+/// Format: numbers for matches, letters for mismatches, ^letter for deletions.
+pub fn mdz_string(cigar: &Cigar, query: &[u8], reference: &[u8], ref_start: usize) -> String {
+    let mut result = String::new();
+    let mut q_pos = 0usize;
+    let mut r_pos = ref_start;
+    let mut match_count = 0u32;
+
+    for (op, len) in &cigar.ops {
+        match op {
+            CigarOp::M | CigarOp::Eq | CigarOp::X => {
+                for i in 0..*len as usize {
+                    let q_idx = q_pos + i;
+                    let r_idx = r_pos + i;
+
+                    if q_idx >= query.len() || r_idx >= reference.len() {
+                        continue;
+                    }
+
+                    if query[q_idx] == reference[r_idx] {
+                        match_count += 1;
+                    } else {
+                        if match_count > 0 {
+                            result.push_str(&match_count.to_string());
+                            match_count = 0;
+                        }
+                        result.push(Reference::decode_base(query[q_idx]));
+                    }
+                }
+                q_pos += *len as usize;
+                r_pos += *len as usize;
+            }
+            CigarOp::I => {
+                if match_count > 0 {
+                    result.push_str(&match_count.to_string());
+                    match_count = 0;
+                }
+                for i in 0..*len as usize {
+                    let q_idx = q_pos + i;
+                    if q_idx < query.len() {
+                        result.push(Reference::decode_base(query[q_idx]));
+                    }
+                }
+                q_pos += *len as usize;
+            }
+            CigarOp::D => {
+                if match_count > 0 {
+                    result.push_str(&match_count.to_string());
+                    match_count = 0;
+                }
+                result.push('^');
+                for i in 0..*len as usize {
+                    let r_idx = r_pos + i;
+                    if r_idx < reference.len() {
+                        result.push(Reference::decode_base(reference[r_idx]));
+                    }
+                }
+                r_pos += *len as usize;
+            }
+            _ => {
+                r_pos += *len as usize;
+            }
+        }
+    }
+
+    if match_count > 0 {
+        result.push_str(&match_count.to_string());
+    }
+
+    if result.is_empty() {
+        result.push('0');
+    }
+
+    format!("MD:Z:{}", result)
 }
 
 #[derive(Clone)]
@@ -930,5 +1010,102 @@ mod tests {
 
         cigar1.extend(cigar2);
         assert_eq!(cigar1.to_string(), "5=3I");
+    }
+
+    #[test]
+    fn test_mdz_string_all_matches() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 10);
+
+        let query = vec![0u8; 10];
+        let reference = vec![0u8; 10];
+
+        let mdz = mdz_string(&cigar, &query, &reference, 0);
+        assert_eq!(mdz, "MD:Z:10");
+    }
+
+    #[test]
+    fn test_mdz_string_with_mismatch() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 5);
+        cigar.push(CigarOp::X, 1);
+        cigar.push(CigarOp::Eq, 3);
+
+        let query = vec![0, 0, 0, 0, 0, 1, 0, 0, 0];
+        let reference = vec![0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        let mdz = mdz_string(&cigar, &query, &reference, 0);
+        assert_eq!(mdz, "MD:Z:5C3");
+    }
+
+    #[test]
+    fn test_mdz_string_with_deletion() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 5);
+        cigar.push(CigarOp::D, 1);
+        cigar.push(CigarOp::Eq, 3);
+
+        let query = vec![0u8; 8];
+        let reference = vec![0, 0, 0, 0, 0, 1, 0, 0, 0];
+
+        let mdz = mdz_string(&cigar, &query, &reference, 0);
+        assert_eq!(mdz, "MD:Z:5^C3");
+    }
+
+    #[test]
+    fn test_mdz_string_with_insertion() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 3);
+        cigar.push(CigarOp::I, 2);
+        cigar.push(CigarOp::Eq, 3);
+
+        let query = vec![0, 0, 0, 1, 2, 0, 0, 0];
+        let reference = vec![0, 0, 0, 0, 0, 0];
+
+        let mdz = mdz_string(&cigar, &query, &reference, 0);
+        assert!(mdz.starts_with("MD:Z:3"), "{}", mdz);
+        assert!(mdz.ends_with('3'), "{}", mdz);
+    }
+
+    #[test]
+    fn test_mdz_string_empty() {
+        let cigar = Cigar::new();
+        let query: Vec<u8> = vec![];
+        let reference: Vec<u8> = vec![];
+
+        let mdz = mdz_string(&cigar, &query, &reference, 0);
+        assert_eq!(mdz, "MD:Z:0");
+    }
+
+    #[test]
+    fn test_mdz_string_complex() {
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 2);
+        cigar.push(CigarOp::X, 1);
+        cigar.push(CigarOp::Eq, 3);
+        cigar.push(CigarOp::D, 1);
+        cigar.push(CigarOp::Eq, 4);
+
+        let query = vec![0, 0, 1, 0, 0, 0, 0, 0, 0, 0];
+        let reference = vec![0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0];
+
+        let mdz = mdz_string(&cigar, &query, &reference, 0);
+        assert_eq!(mdz, "MD:Z:2C3^C4");
+    }
+
+    #[test]
+    fn test_mdz_string_in_alignment_result() {
+        let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
+        let ref_data = ref_seq.as_slice().to_vec();
+        let index = FMIndex::build(&ref_seq);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+
+        let query = vec![0, 1, 2, 3];
+        let result = aligner.align_read(&query, None).unwrap();
+
+        if result.md_tag.is_none() {
+            panic!("MD tag should be set for aligned reads");
+        }
+        assert!(result.md_tag.as_ref().unwrap().starts_with("MD:Z:"), "{}", result.md_tag.unwrap());
     }
 }
