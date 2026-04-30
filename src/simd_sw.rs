@@ -317,10 +317,17 @@ mod avx2_impl {
                 let matches = query_v.eq(ref_v);
                 let scores = matches.select(match_v, mismatch_v);
 
-                let prev_v = i32x8::load(&dp_prev[base..base + LANES]);
-                let left_v = i32x8::load(&dp_curr[base..base + LANES]);
+                let mut prev_arr = [0i32; LANES];
+                prev_arr.copy_from_slice(&dp_prev[base..base + LANES]);
+                let prev_v = i32x8::new(prev_arr);
 
-                let mut diag_v = i32x8::load(&dp_prev[base + 1..base + 1 + LANES]);
+                let mut left_arr = [0i32; LANES];
+                left_arr.copy_from_slice(&dp_curr[base..base + LANES]);
+                let left_v = i32x8::new(left_arr);
+
+                let mut diag_arr = [0i32; LANES];
+                diag_arr.copy_from_slice(&dp_prev[base + 1..base + 1 + LANES]);
+                let mut diag_v = i32x8::new(diag_arr);
                 diag_v = diag_v.replace(7, if base > 0 { dp_prev[base - 1] } else { 0 });
 
                 let diag_scores = diag_v + scores;
@@ -328,7 +335,7 @@ mod avx2_impl {
                 let up_scores = prev_v + gap_open_v;
 
                 let result = diag_scores.max(left_scores).max(up_scores);
-                result.store(&mut dp_curr[base..base + LANES]);
+                dp_curr[base..base + LANES].copy_from_slice(&result.as_array());
             }
 
             for j in num_blocks * LANES..=r_len {
@@ -415,16 +422,23 @@ mod avx2_impl {
                 let matches = query_v.eq(ref_v);
                 let scores = matches.select(match_v, mismatch_v);
 
-                let prev_v = i32x8::load(&dp_prev[base..base + LANES]);
-                let left_v = i32x8::load(&dp_curr[base..base + LANES]);
+                let mut prev_arr = [0i32; LANES];
+                prev_arr.copy_from_slice(&dp_prev[base..base + LANES]);
+                let prev_v = i32x8::new(prev_arr);
 
-                let mut diag_v = i32x8::load(&dp_prev[base + 1..base + 1 + LANES]);
+                let mut left_arr = [0i32; LANES];
+                left_arr.copy_from_slice(&dp_curr[base..base + LANES]);
+                let left_v = i32x8::new(left_arr);
+
+                let mut diag_arr = [0i32; LANES];
+                diag_arr.copy_from_slice(&dp_prev[base + 1..base + 1 + LANES]);
+                let mut diag_v = i32x8::new(diag_arr);
                 diag_v = diag_v.replace(7, if base > 0 { dp_prev[base - 1] } else { 0 });
 
                 let result = (diag_v + scores)
                     .max(left_v + gap_extend_v)
                     .max(prev_v + gap_open_v);
-                result.store(&mut dp_curr[base..base + LANES]);
+                dp_curr[base..base + LANES].copy_from_slice(&result.as_array());
 
                 let block_max = result.horizontal_max();
                 if block_max > best_score {
