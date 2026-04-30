@@ -65,12 +65,20 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 ## Phase 3: SIMD Alignment
 
 ### T29: SIMD Smith-Waterman
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** Vectorized SW using AVX2/AVX-512.
 **Deliverables:**
-- [ ] `packed_simd` or `wide` integration
-- [ ] Process 16-32 bases per cycle
-- [ ] CPU feature detection at runtime
+- [x] `wide` crate integration
+- [x] Process 8-16 bases per cycle (AVX2: 8 lanes, AVX-512: 16 lanes)
+- [x] CPU feature detection at runtime
+
+**Changes:**
+- Added `src/simd_sw.rs` with SIMD-accelerated Smith-Waterman
+- `wide` crate for portable SIMD operations on x86
+- Runtime CPU feature detection with `is_x86_feature_detected!` macro
+- AVX2 implementation processes 8 lanes (256-bit), AVX-512 processes 16 lanes (512-bit)
+- Automatic fallback to scalar implementation on unsupported hardware
+- Exported `get_simd_config()`, `nw_score()`, and `extend_forward_simd()` functions
 
 ### T30: SIMD Affine DP
 **Status:** Pending
