@@ -29,6 +29,7 @@
 
 pub mod alignment;
 pub mod bam;
+pub mod simd_sw;
 pub mod chaining;
 pub mod error;
 pub mod fastq;
@@ -44,6 +45,7 @@ pub mod types;
 
 pub use alignment::Aligner;
 pub use error::BwaError;
+pub use simd_sw::{get_simd_config, nw_score, extend_forward_simd, SimdConfig};
 pub use fm_index::FMIndex;
 pub use reference::Reference;
 pub use sa::SuffixArray;
