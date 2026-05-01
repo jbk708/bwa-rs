@@ -30,6 +30,7 @@
 pub mod alignment;
 pub mod bam;
 pub mod chaining;
+pub mod compact;
 pub mod error;
 pub mod fastq;
 pub mod fm_index;
@@ -44,6 +45,7 @@ pub mod simd_sw;
 pub mod types;
 
 pub use alignment::Aligner;
+pub use compact::{BitPackedBWT, CompactOccTable, StreamingFMIndex, StreamingFMIndexBuilder};
 pub use error::BwaError;
 pub use fm_index::FMIndex;
 pub use reference::Reference;
