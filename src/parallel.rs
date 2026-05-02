@@ -30,7 +30,10 @@ impl ParallelAligner {
     }
 
     pub fn align_batch(&self, queries: &[&[u8]]) -> Vec<Result<AlignmentResult, BwaError>> {
-        queries.par_iter().map(|q| self.inner.align_read(q, None)).collect()
+        queries
+            .par_iter()
+            .map(|q| self.inner.align_read(q, None))
+            .collect()
     }
 
     pub fn align_batch_with_mates(
@@ -105,7 +108,10 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGTACGT").unwrap();
         let ref_data = ref_seq.as_slice().to_vec();
         let index = FMIndex::build(&ref_seq);
-        (ParallelAligner::new(index, ref_data.clone()).min_seed_len(2), ref_data)
+        (
+            ParallelAligner::new(index, ref_data.clone()).min_seed_len(2),
+            ref_data,
+        )
     }
 
     #[test]

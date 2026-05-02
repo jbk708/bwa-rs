@@ -5,7 +5,9 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use bwa_mem::types::AlignmentResult;
-use bwa_mem::{fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, Reference, ThreadPoolConfig};
+use bwa_mem::{
+    fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, Reference, ThreadPoolConfig,
+};
 
 #[derive(Parser)]
 #[command(name = "bwa-rs")]
@@ -81,7 +83,8 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     let ref_data = reference.as_slice();
     let index = FMIndex::build(&reference);
 
-    let aligner = ParallelAligner::new(index, ref_data.to_vec()).min_seed_len(args.min_seed_len as usize);
+    let aligner =
+        ParallelAligner::new(index, ref_data.to_vec()).min_seed_len(args.min_seed_len as usize);
 
     let mut output: Box<dyn Write> = if args.output.to_string_lossy() == "-" {
         Box::new(std::io::stdout())

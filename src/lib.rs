@@ -30,7 +30,6 @@
 pub mod alignment;
 pub mod bam;
 pub mod chaining;
-pub mod parallel;
 pub mod compact;
 pub mod error;
 pub mod fastq;
@@ -38,6 +37,7 @@ pub mod fm_index;
 pub mod mmap_index;
 pub mod occ;
 pub mod paired;
+pub mod parallel;
 pub mod reference;
 pub mod sa;
 pub mod sam;
