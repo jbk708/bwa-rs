@@ -7,9 +7,9 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | 🟡 In Progress | 0 |
-| ⬜ Pending | 5 |
+| ⬜ Pending | 6 |
 | ✅ Done | 4 |
-| **Total** | **9** |
+| **Total** | **10** |
 
 ---
 
@@ -81,7 +81,7 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 - Exported `get_simd_config()`, `nw_score()`, and `extend_forward_simd()` functions
 
 ### T30: SIMD Affine DP
-**Status:** ❌ Failed
+**Status:** ⬜ Pending
 **Description:** Vectorized 3-matrix affine gap alignment.
 **Deliverables:**
 - [ ] SIMD M/X/G matrices
