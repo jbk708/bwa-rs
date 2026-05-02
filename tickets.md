@@ -108,12 +108,12 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 - Changed `unsafe_code` lint to `deny` (allows module-level `#![allow]`)
 
 ### T32: Compact Encoding
-**Status:** 🟡 In Progress
+**Status:** ✅ Done 
 **Description:** Bit-packed structures for minimal memory.
 **Deliverables:**
-- [ ] 2-bit BWT (done)
-- [ ] Bit-packed occurrence tables
-- [ ] Streaming index construction
+- [x] 2-bit BWT (done)
+- [x] Bit-packed occurrence tables
+- [x] Streaming index construction
 
 ---
 
