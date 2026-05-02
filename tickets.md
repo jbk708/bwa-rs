@@ -7,9 +7,9 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | 🟡 In Progress | 0 |
-| ⬜ Pending | 6 |
-| ✅ Done | 4 |
-| **Total** | **10** |
+| ⬜ Pending | 0 |
+| ✅ Done | 11 |
+| **Total** | **11** |
 
 ---
 
