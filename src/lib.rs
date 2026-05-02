@@ -30,6 +30,7 @@
 pub mod alignment;
 pub mod bam;
 pub mod chaining;
+pub mod parallel;
 pub mod compact;
 pub mod error;
 pub mod fastq;
@@ -48,6 +49,7 @@ pub use alignment::Aligner;
 pub use compact::{BitPackedBWT, CompactOccTable, StreamingFMIndex, StreamingFMIndexBuilder};
 pub use error::BwaError;
 pub use fm_index::FMIndex;
+pub use parallel::{default_thread_count, ParallelAligner, ThreadPoolConfig};
 pub use reference::Reference;
 pub use sa::SuffixArray;
 pub use simd_sw::{extend_forward_simd, get_simd_config, nw_score, SimdConfig};

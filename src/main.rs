@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use bwa_mem::types::AlignmentResult;
-use bwa_mem::{fastq::FASTQReader, Aligner, BwaError, FMIndex, Reference};
+use bwa_mem::{fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, Reference, ThreadPoolConfig};
 
 #[derive(Parser)]
 #[command(name = "bwa-rs")]
@@ -49,6 +49,10 @@ struct MemArgs {
     /// Minimum seed length (default: 19)
     #[arg(short = 'k', default_value = "19")]
     pub min_seed_len: u32,
+
+    /// Number of threads (default: auto-detect)
+    #[arg(short = 't', default_value = "0")]
+    pub threads: u32,
 }
 
 fn main() -> Result<(), BwaError> {
@@ -67,11 +71,17 @@ fn main() -> Result<(), BwaError> {
 }
 
 fn run_mem(args: MemArgs) -> Result<(), BwaError> {
+    if args.threads > 0 {
+        ThreadPoolConfig::new()
+            .num_threads(args.threads as usize)
+            .apply();
+    }
+
     let reference = Reference::from_fasta(&args.reference)?;
     let ref_data = reference.as_slice();
     let index = FMIndex::build(&reference);
 
-    let aligner = Aligner::new(index, ref_data.to_vec()).min_seed_len(args.min_seed_len as usize);
+    let aligner = ParallelAligner::new(index, ref_data.to_vec()).min_seed_len(args.min_seed_len as usize);
 
     let mut output: Box<dyn Write> = if args.output.to_string_lossy() == "-" {
         Box::new(std::io::stdout())
@@ -98,15 +108,13 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             let r2_record = r2_iter.next().transpose()?;
 
             let seq1 = r1.to_sequence();
-            let qual1 = r1.to_quality();
 
-            let result1 = aligner.align_read(&seq1.bases, Some(&qual1))?;
+            let result1 = aligner.align_single(&seq1.bases)?;
             write_sam_record(&mut output, &r1.qname, &result1, false)?;
 
             if let Some(r2) = r2_record {
                 let seq2 = r2.to_sequence();
-                let qual2 = r2.to_quality();
-                let result2 = aligner.align_read(&seq2.bases, Some(&qual2))?;
+                let result2 = aligner.align_single(&seq2.bases)?;
                 write_sam_record(&mut output, &r2.qname, &result2, true)?;
             }
 
@@ -119,9 +127,8 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         for record in iter {
             let r1 = record?;
             let seq = r1.to_sequence();
-            let qual = r1.to_quality();
 
-            let result = aligner.align_read(&seq.bases, Some(&qual))?;
+            let result = aligner.align_single(&seq.bases)?;
             write_sam_record(&mut output, &r1.qname, &result, false)?;
             count += 1;
 

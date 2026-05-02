@@ -120,12 +120,23 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 ## Phase 5: Parallelization
 
 ### T33: Multi-threaded Alignment
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** Parallel read processing with Rayon.
 **Deliverables:**
-- [ ] Thread pool for batch alignment
-- [ ] Lock-free FM-Index queries
-- [ ] Configurable thread count
+- [x] Thread pool for batch alignment
+- [x] Lock-free FM-Index queries
+- [x] Configurable thread count
+
+**Changes:**
+- Added `rayon` dependency for parallel processing
+- Added `src/parallel.rs` with `ParallelAligner` struct
+- `ParallelAligner::align_batch()` - parallel alignment for multiple reads
+- `ParallelAligner::align_batch_paired()` - parallel paired-end alignment
+- `ParallelAligner::align_single()` - single read alignment
+- `ThreadPoolConfig` - configurable thread pool settings
+- `default_thread_count()` - auto-detect CPU cores
+- Added `-t/--threads` CLI flag for thread count control
+- Exported `ParallelAligner`, `ThreadPoolConfig`, `default_thread_count`
 
 ### T34: Parallel Seeding
 **Status:** Pending
