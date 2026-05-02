@@ -1,17 +1,17 @@
 # bwa-rs
 
-Pure Rust implementation of BWA-MEM for genomic alignment with paired-end support.
+**Pure Rust implementation of BWA-MEM** for genomic alignment with paired-end support.
 
 ## Features
 
 - **Pure Rust** - No C dependencies, compiles to a single binary
-- **2-bit encoded** - Memory-efficient storage for 3GB genomes
-- **FM-Index** - Fast substring search with BWT and suffix array
-- **MEM seeding** - Maximal Exact Matches for sensitive alignment
-- **Smith-Waterman** - Banded alignment with affine gap penalties
-- **Paired-end** - FR orientation, insert size estimation, orphan rescue
-- **SAM/BAM** - Standard format output with BGZF compression
-- **Streaming** - Process large FASTQ files with low memory footprint
+- **FM-Index** - O(n) suffix array, O(1) rank queries via wavelet tree
+- **SIMD Alignment** - AVX2/AVX-512 Smith-Waterman (x86) / scalar fallback (ARM)
+- **Memory Mapped** - Zero-copy index access for 3GB+ genomes
+- **Parallel** - Multi-threaded alignment and seeding via Rayon
+- **2-bit Encoding** - Memory-efficient storage
+- **SAM Output** - Standard format with BGZF compression support
+- **Streaming** - Process large FASTQ files with low memory
 
 ## Installation
 
@@ -19,61 +19,74 @@ Pure Rust implementation of BWA-MEM for genomic alignment with paired-end suppor
 cargo build --release
 ```
 
-The binary will be at `target/release/bwa-rs`.
+Binary: `target/release/bwa-rs`
 
 ## Usage
 
-### Build index
-
 ```bash
+# Build index
 bwa-rs index -r reference.fa -p ref
+
+# Align single-end
+bwa-rs mem -r reference.fa reads.fq -o output.sam
+
+# Align paired-end
+bwa-rs mem -r reference.fa -1 reads_1.fq -2 reads_2.fq -o output.sam
 ```
 
-### Align single-end reads
-
-```bash
-bwa-rs mem -R reference.fa -1 reads.fq -o output.sam
-```
-
-### Align paired-end reads
-
-```bash
-bwa-rs mem -R reference.fa -1 reads_1.fq -2 reads_2.fq -o output.sam
-```
-
-### Options
+## Options
 
 | Flag | Description | Default |
 |------|-------------|---------|
 | `-k` | Minimum seed length | 19 |
-| `-o` | Output file (SAM) | stdout |
+| `-t` | Thread count | auto |
+| `-o` | Output file | stdout |
 
 ## Architecture
 
 ```
 src/
-├── lib.rs           # Library exports
-├── main.rs          # CLI entry point
-├── error.rs         # Error types (BwaError)
-├── types.rs         # Core types (Sequence, Cigar, AlignmentResult)
-├── reference.rs     # FASTA parsing, 2-bit encoding
-├── fm_index.rs      # FM-Index, BWT, suffix array, save/load
-├── fastq.rs         # FASTQ streaming parser
-├── seed.rs          # MEM finding, filtering
-├── alignment.rs     # Smith-Waterman, affine gaps, chaining
-├── chaining.rs      # Seed chaining DP
-├── sam.rs           # SAM record construction
-├── bam.rs           # BAM/BCF output with BGZF
-└── paired.rs        # Insert size model, pairing, rescue
+├── lib.rs              # Library exports
+├── main.rs             # CLI entry point
+├── error.rs            # Error types
+├── types.rs            # Core types
+├── reference.rs        # FASTA parsing, 2-bit encoding
+├── fm_index.rs         # FM-Index, BWT, suffix array
+├── fastq.rs            # FASTQ streaming
+├── seed.rs             # MEM finding
+├── alignment.rs        # Smith-Waterman, affine gaps
+├── chaining.rs         # Seed chaining
+├── sam.rs              # SAM records
+├── bam.rs              # BAM output
+├── paired.rs           # Pairing, rescue
+├── parallel.rs         # Multi-threaded alignment
+├── parallel_seed.rs    # Chunked parallel seeding
+├── simd_sw.rs          # SIMD Smith-Waterman
+├── simd_affine.rs      # SIMD affine alignment
+└── mmap_index.rs       # Memory-mapped FM-Index
 ```
 
 ## Testing
 
+See [testing.md](testing.md) for:
+- Unit and integration tests
+- BWA-MEM comparison tests
+- Performance benchmarking
+
 ```bash
+# Run tests
 cargo test
+
+# Compare against bwa mem (requires bwa installed)
+brew install bwa
+BWA_PATH=bwa cargo test test_compare_against_bwa_mem
 ```
 
-Integration tests verify alignment correctness against reference BWA-MEM.
+## Documentation
+
+- [testing.md](testing.md) - Testing guide
+- [performance.md](performance.md) - Optimization results
+- [tickets.md](tickets.md) - Project tracking
 
 ## License
 
