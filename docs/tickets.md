@@ -31,6 +31,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T1: Consolidate duplicate encoding functions
 
+**Status:** ⬜ Pending
+
 **Description:** encode_sequence() is duplicated in sa.rs and reference.rs. Extract to a shared location.
 
 **Deliverables:**
@@ -40,6 +42,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 ---
 
 ### T2: Merge duplicate MD tag generation
+
+**Status:** ⬜ Pending
 
 **Description:** mdz_string() exists in both alignment.rs and types.rs producing identical output.
 
@@ -51,6 +55,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T3: Deduplicate Cigar compression
 
+**Status:** ⬜ Pending
+
 **Description:** compress_cigar() is copy-pasted in alignment.rs and simd_sw.rs.
 
 **Deliverables:**
@@ -60,6 +66,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 ---
 
 ### T4: Remove dead SIMD code paths
+
+**Status:** ⬜ Pending
 
 **Description:** simd_affine.rs AVX2 function falls back to scalar at end. AVX512 is stub-only.
 
@@ -72,6 +80,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T5: Remove unused dependencies
 
+**Status:** ⬜ Pending
+
 **Description:** succinct crate imported but RrrBitvec never used by main code.
 
 **Deliverables:**
@@ -81,6 +91,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 ---
 
 ### T6: Optimize FM-index serialization
+
+**Status:** ⬜ Pending
 
 **Description:** OccTable::read_from() reconstructs counts from BWT instead of reading pre-computed values.
 
@@ -92,6 +104,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 ---
 
 ### T7: Remove stored reference from FMIndex
+
+**Status:** ⬜ Pending
 
 **Description:** reference: Vec<u8> field is stored but never used (method is #[allow(dead_code)]).
 
