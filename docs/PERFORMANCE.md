@@ -1,71 +1,121 @@
-# BWA-MEM Performance Optimization
+# BWA-MEM Performance Benchmarking
 
-**Status: ✅ All optimizations complete**
+Comparing Rust (`bwa-rs`) against C reference (`bwa-mem`).
 
----
+## Quick Start
 
-## Performance Results
+```bash
+# Install bwa-mem reference
+brew install bwa  # macOS
+# or: sudo apt install bwa  # Linux
 
-| Component | Before | After | Improvement |
-|-----------|--------|-------|-------------|
-| Suffix Array | O(n² log n) | O(n) | **100x** |
-| Occ Table | O(32) scan | O(1) | **32x** |
-| SW Extension | Scalar | SIMD (AVX2/AVX-512) | **4-8x** |
-| Memory | 25GB | Memory-mapped | **Unbounded** |
-| Index Time | Hours | ~5 min | **100x** |
+# Build rust implementation
+cargo build --release
 
----
-
-## Completed Phases
-
-### Phase 1: Fast Suffix Array ✅
-
-- **T25: SA-IS Algorithm** - O(n) suffix array using libsais-rs
-- **T26: Integer Alphabet SA** - Radix sort on compact integers
-
-### Phase 2: Succinct Occ Table ✅
-
-- **T27: Wavelet Tree** - O(1) rank queries using wavelet-matrix crate
-- **T28: RRR / SDArray** - Succinct bitvectors with succinct crate
-
-### Phase 3: SIMD Alignment ✅
-
-- **T29: SIMD Smith-Waterman** - AVX2/AVX-512 via wide crate
-- **T30: SIMD Affine DP** - Vectorized 3-matrix affine gap alignment
-
-### Phase 4: Memory Optimization ✅
-
-- **T31: Full Memory Mapping** - Zero-copy access with memmap2
-- **T32: Compact Encoding** - 2-bit BWT, bit-packed occurrence tables
-
-### Phase 5: Parallelization ✅
-
-- **T33: Multi-threaded Alignment** - Rayon thread pool
-- **T34: Parallel Seeding** - Chunked MEM finding
-
-### Maintenance ✅
-
-- **T35: Code Cleanup** - clippy clean, simplified tests
+# Run benchmark
+./bench.sh
+```
 
 ---
 
-## Dependencies
+## Benchmark Results
 
-| Crate | Purpose |
-|-------|---------|
-| `wide` | SIMD operations (AVX2/AVX-512) |
-| `rayon` | Parallelization |
-| `memmap2` | Memory mapping |
-| `libsais-rs` | O(n) SA construction |
-| `wavelet-matrix` | O(1) rank queries |
-| `succinct` | Succinct bitvectors |
+Fill in results from your benchmarks:
+
+### Indexing
+
+| Metric | bwa-mem (C) | bwa-rs (Rust) | Ratio |
+|--------|-------------|---------------|-------|
+| Time (3GB genome) | | | |
+| Memory (3GB genome) | | | |
+| Time (E. coli ~5MB) | | | |
+| Memory (E. coli) | | | |
+
+### Alignment
+
+| Metric | bwa-mem (C) | bwa-rs (Rust) | Ratio |
+|--------|-------------|---------------|-------|
+| Throughput (reads/sec) | | | |
+| Peak memory | | | |
+| Alignment accuracy | | | |
+
+---
+
+## Methodology
+
+### Test Data
+
+```bash
+# Download reference genome
+# E. coli K-12
+wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2/GCF_000005845.2_ASM584v2_genomic.fna.gz
+gunzip GCF_000005845.2_ASM584v2_genomic.fna.gz
+
+# Generate synthetic reads (requires seqtk)
+seqtk seq -a ref.fna -s 42 - 100000 > reads.fq
+```
+
+### Commands
+
+```bash
+# Index
+time bwa index ref.fa                    # C
+time ./target/release/bwa-rs index -r ref.fa -p ref  # Rust
+
+# Align
+time bwa mem ref.fa reads.fq > out.sam   # C
+time ./target/release/bwa-rs mem -r ref.fa reads.fq -o out.sam  # Rust
+```
+
+### Memory Measurement
+
+```bash
+# Linux
+/usr/bin/time -v bwa mem ref.fa reads.fq 2>&1 | grep "Maximum resident"
+
+# macOS
+/usr/bin/time -v ./target/release/bwa-rs mem -r ref.fa reads.fq
+```
+
+---
+
+## Accuracy Verification
+
+Verify alignment correctness:
+
+```bash
+cargo test test_compare_against_bwa_mem
+```
+
+Compare SAM outputs directly:
+
+```bash
+bwa mem ref.fa reads.fq > c_output.sam
+./target/release/bwa-rs mem -r ref.fa reads.fq -o rust_output.sam
+
+# Diff alignments (excluding timing/metadata)
+diff <(grep -v "^@" c_output.sam | cut -f1-6 | sort) \
+     <(grep -v "^@" rust_output.sam | cut -f1-6 | sort)
+```
+
+---
+
+## System Info
+
+Fill in your system specs:
+
+```
+CPU: 
+RAM: 
+OS: 
+Rust version: 
+bwa version: 
+```
 
 ---
 
 ## Notes
 
-- **Apple Silicon (M4/M3/M2):** SIMD falls back to scalar. x86 with AVX2/AVX-512 gets full speed.
-- **Memory mapping:** Enables alignment against 3GB+ genomes on laptops with limited RAM.
-- **SIMD fallback:** Automatic detection via `is_x86_feature_detected!` macro.
-
-See [testing.md](testing.md) for benchmark procedures.
+- Hardware: Apple Silicon falls back to scalar SIMD (slower than x86 AVX)
+- Memory mapping: bwa-rs uses mmap, may show different RSS vs bwa-mem
+- Thread count: Use `-t` flag to control parallelism
