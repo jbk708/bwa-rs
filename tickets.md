@@ -146,12 +146,20 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 - Exported `ParallelAligner`, `ThreadPoolConfig`, `default_thread_count`
 
 ### T34: Parallel Seeding
-**Status:** Pending
+**Status:** ✅ Done
 **Description:** Partition query for multi-threaded MEM finding.
 **Deliverables:**
-- [ ] Divide long reads into chunks
-- [ ] Parallel MEM discovery
-- [ ] Merge and dedupe results
+- [x] Divide long reads into chunks
+- [x] Parallel MEM discovery
+- [x] Merge and dedupe results
+
+**Changes:**
+- Added `src/parallel_seed.rs` with `ChunkConfig`, `partition_query()`, `parallel_find_mems()`
+- `ChunkConfig` - configurable chunk size (default 256), overlap (default 64), min MEM length
+- `partition_query()` - splits queries into overlapping chunks for parallel processing
+- `parallel_find_mems()` - uses Rayon for parallel MEM discovery across chunks
+- `deduplicate_mems()` - removes duplicate MEMs after merging chunks
+- Exported `ChunkConfig`, `partition_query`, `parallel_find_mems` from lib.rs
 
 ---
 
