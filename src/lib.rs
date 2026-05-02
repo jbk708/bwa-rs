@@ -42,6 +42,7 @@ pub mod reference;
 pub mod sa;
 pub mod sam;
 pub mod seed;
+pub mod simd_affine;
 pub mod simd_sw;
 pub mod types;
 
@@ -52,5 +53,6 @@ pub use fm_index::FMIndex;
 pub use parallel::{default_thread_count, ParallelAligner, ThreadPoolConfig};
 pub use reference::Reference;
 pub use sa::SuffixArray;
+pub use simd_affine::affine_extend_forward_simd;
 pub use simd_sw::{extend_forward_simd, get_simd_config, nw_score, SimdConfig};
 pub use types::*;

@@ -81,7 +81,7 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 - Exported `get_simd_config()`, `nw_score()`, and `extend_forward_simd()` functions
 
 ### T30: SIMD Affine DP
-**Status:** ⬜ Pending
+**Status:** 🟡 In Progress
 **Description:** Vectorized 3-matrix affine gap alignment.
 **Deliverables:**
 - [ ] SIMD M/X/G matrices
