@@ -38,6 +38,7 @@ pub mod mmap_index;
 pub mod occ;
 pub mod paired;
 pub mod parallel;
+pub mod parallel_seed;
 pub mod reference;
 pub mod sa;
 pub mod sam;
@@ -51,6 +52,7 @@ pub use compact::{BitPackedBWT, CompactOccTable, StreamingFMIndex, StreamingFMIn
 pub use error::BwaError;
 pub use fm_index::FMIndex;
 pub use parallel::{default_thread_count, ParallelAligner, ThreadPoolConfig};
+pub use parallel_seed::{parallel_find_mems, partition_query, ChunkConfig};
 pub use reference::Reference;
 pub use sa::SuffixArray;
 pub use simd_affine::affine_extend_forward_simd;
