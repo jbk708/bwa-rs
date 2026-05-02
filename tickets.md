@@ -81,12 +81,19 @@ This replaces the sort-based O(n² log n) approach with true O(n) performance.
 - Exported `get_simd_config()`, `nw_score()`, and `extend_forward_simd()` functions
 
 ### T30: SIMD Affine DP
-**Status:** 🟡 In Progress
+**Status:** ✅ Done
 **Description:** Vectorized 3-matrix affine gap alignment.
 **Deliverables:**
-- [ ] SIMD M/X/G matrices
-- [ ] Banded traversal with vectorization
-- [ ] Verify correctness vs scalar version
+- [x] SIMD M/X/G matrices
+- [x] Banded traversal with vectorization
+- [x] Verify correctness vs scalar version
+
+**Changes:**
+- Added `src/simd_affine.rs` with SIMD-accelerated affine DP
+- `wide` crate for portable SIMD operations on x86
+- AVX2 implementation processes 8 lanes (256-bit), AVX-512 processes 16 lanes (512-bit)
+- Runtime CPU feature detection with `is_x86_feature_detected!` macro
+- Exported `affine_extend_forward_simd()` function for vectorized alignment
 
 ---
 
