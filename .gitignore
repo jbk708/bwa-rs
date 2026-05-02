@@ -11,3 +11,4 @@ index*
 *.swp
 *.swo
 *~
+scripts/ticket_runner.py

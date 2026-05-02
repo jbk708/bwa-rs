@@ -46,6 +46,7 @@ pub mod seed;
 pub mod simd_affine;
 pub mod simd_sw;
 pub mod types;
+pub mod utils;
 
 pub use alignment::Aligner;
 pub use compact::{BitPackedBWT, CompactOccTable, StreamingFMIndex, StreamingFMIndexBuilder};

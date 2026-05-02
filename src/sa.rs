@@ -3,36 +3,10 @@
 //! This module provides O(n) suffix array construction via the sa-is crate
 //! and integer alphabet support via libsais-rs for efficient radix sorting.
 
+use crate::utils::encode_sequence;
 use std::io::{Read, Write};
 
-/// Encode a DNA sequence as integers: A=0, C=1, G=2, T=3, N=4
-/// This enables efficient integer-based suffix array construction.
-pub fn encode_sequence(seq: &[u8]) -> Vec<u8> {
-    seq.iter()
-        .map(|&b| match b.to_ascii_uppercase() {
-            b'A' => 0,
-            b'C' => 1,
-            b'G' => 2,
-            b'T' => 3,
-            b'N' => 4,
-            _ => 4,
-        })
-        .collect()
-}
-
-/// Encode a DNA sequence as u16 integers for larger alphabets.
-pub fn encode_sequence_u16(seq: &[u8]) -> Vec<u16> {
-    seq.iter()
-        .map(|&b| match b.to_ascii_uppercase() {
-            b'A' => 0,
-            b'C' => 1,
-            b'G' => 2,
-            b'T' => 3,
-            b'N' => 4,
-            _ => 4,
-        })
-        .collect()
-}
+pub use crate::utils::{encode_sequence, encode_sequence_u16};
 
 /// Build suffix array using integer alphabet via libsais-rs.
 /// Returns indices into the original sequence.
