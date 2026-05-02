@@ -84,9 +84,9 @@ BWA_PATH=bwa cargo test test_compare_against_bwa_mem
 
 ## Documentation
 
-- [testing.md](testing.md) - Testing guide
-- [performance.md](performance.md) - Optimization results
-- [tickets.md](tickets.md) - Project tracking
+- [docs/testing.md](docs/testing.md) - Testing guide
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - Optimization results
+- [docs/tickets.md](docs/tickets.md) - Project tracking
 
 ## License
 
