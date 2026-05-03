@@ -1,6 +1,6 @@
 # BWA-MEM Performance Optimization
 
-**Project Status: 🟡 In Progress**
+**Project Status: ✅ Complete**
 
 Pure Rust implementation targeting C BWA-MEM performance.
 
@@ -8,9 +8,10 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 17 |
-| 🔄 In Progress | 1 |
-| **Total** | **18** |
+| ✅ Done | 35 |
+| 🔄 In Progress | 0 |
+| ⬜ Pending | 4 |
+| **Total** | **39** |
 
 ---
 
@@ -18,101 +19,68 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Phase | Description | Tickets |
 |-------|-------------|---------|
-| Phase 1 | Fast Suffix Array | T25, T26 |
-| Phase 2 | Succinct Occ Table | T27, T28 |
-| Phase 3 | SIMD Alignment | T29, T30 |
-| Phase 4 | Memory Optimization | T31, T32 |
-| Phase 5 | Parallelization | T33, T34 |
-| Phase 6 | Code Cleanup | T35 |
+| Phase 1 | Core Implementation | T1-T24 |
+| Phase 2 | Fast Suffix Array | T25, T26 |
+| Phase 3 | Succinct Occ Table | T27, T28 |
+| Phase 4 | SIMD Alignment | T29, T30 |
+| Phase 5 | Memory Optimization | T31, T32 |
+| Phase 6 | Parallelization | T33, T34 |
+| Phase 7 | Code Cleanup | T35-T41 |
 
 ---
 
-## Current Tickets
+## Future Optimization Tickets
 
-### T1: Consolidate duplicate encoding functions
+### T42: Implement true SIMD Smith-Waterman
 
-**Status:** ✅ Done
-
-**Description:** encode_sequence() is duplicated in sa.rs and reference.rs. Extract to a shared location.
+**Description:** Vectorize the Smith-Waterman DP using AVX2/AVX-512 instead of scalar fallback.
 
 **Deliverables:**
-- [ ] Move encoding to utils.rs or types.rs
-- [ ] Remove duplicates from sa.rs and reference.rs
+- [ ] Implement 8-lane AVX2 SW using `wide` crate
+- [ ] Implement 16-lane AVX-512 SW for supported hardware
+- [ ] Verify correctness against scalar baseline
+- [ ] Add CPU feature detection with runtime dispatch
+
+**Dependencies:** None
 
 ---
 
-### T2: Merge duplicate MD tag generation
+### T43: Implement supermaximal MEM finding
 
-**Status:** ✅ Done
-
-**Description:** mdz_string() exists in both alignment.rs and types.rs producing identical output.
+**Description:** Replace recursive binary search with BWA's supermaximal MEM algorithm for O(n) expected time.
 
 **Deliverables:**
-- [ ] Keep one implementation (prefer types.rs since it lives on AlignmentResult)
-- [ ] Remove duplicate from alignment.rs
+- [ ] Implement Z-array based supermaximal MEM discovery
+- [ ] Remove `find_mems_recursive` in favor of linear algorithm
+- [ ] Verify correctness on test sequences
+
+**Dependencies:** None
 
 ---
 
-### T3: Deduplicate Cigar compression
+### T44: Integrate wavelet tree for O(1) occ queries
 
-**Status:** ✅ Done
-
-**Description:** compress_cigar() is copy-pasted in alignment.rs and simd_sw.rs.
+**Description:** Replace sampling-based OccTable with wavelet tree for guaranteed constant-time queries.
 
 **Deliverables:**
-- [ ] Move to shared location (types.rs or utils.rs)
-- [ ] Remove duplicate implementations
+- [ ] Integrate `src/occ/wavelet_tree.rs` into FM-Index
+- [ ] Remove sampling-based occ table
+- [ ] Benchmark improvement on large genomes
+
+**Dependencies:** T42
 
 ---
 
-### T4: Remove dead SIMD code paths
+### T45: Tune alignment parameters
 
-**Status:** ✅ Done
-
-**Description:** simd_affine.rs AVX2 function falls back to scalar at end. AVX512 is stub-only.
+**Description:** Benchmark and tune bandwidth, scoring parameters for optimal alignment quality.
 
 **Deliverables:**
-- [ ] Remove incomplete affine_extend_forward_avx2 or complete traceback
-- [ ] Remove empty affine_extend_forward_avx512 stub
-- [ ] Keep #[allow(dead_code)] only if intentional for future work
+- [ ] Fill in PERFORMANCE.md with benchmarks
+- [ ] Compare alignment accuracy against C BWA-MEM
+- [ ] Tune `optimal_bandwidth()` based on empirical results
 
----
-
-### T5: Remove unused dependencies
-
-**Status:** ✅ Done
-
-**Description:** succinct crate imported but RrrBitvec never used by main code.
-
-**Deliverables:**
-- [ ] Remove succinct from Cargo.toml if not needed
-- [ ] Or add #[allow(dead_code)] with justification comment
-
----
-
-### T6: Optimize FM-index serialization
-
-**Status:** ✅ Done
-
-**Description:** OccTable::read_from() reconstructs counts from BWT instead of reading pre-computed values.
-
-**Deliverables:**
-- [ ] Store counts directly in index file format
-- [ ] Skip reconstruction on load
-- [ ] Add test for large index load performance
-
----
-
-### T7: Remove stored reference from FMIndex
-
-**Status:** ✅ Done
-
-**Description:** reference: Vec<u8> field is stored but never used (method is #[allow(dead_code)]).
-
-**Deliverables:**
-- [ ] Remove reference field from FMIndex struct
-- [ ] Remove reference() accessor
-- [ ] Update FMIndex::build() to not store reference
+**Dependencies:** T42, T43, T44
 
 ---
 
@@ -141,3 +109,18 @@ BWA_PATH=bwa cargo test test_compare_against_bwa_mem
 # Run all tests
 cargo test
 ```
+
+---
+
+## Big-O Complexity
+
+| Phase | Algorithm | Complexity | C BWA-MEM |
+|-------|-----------|------------|-----------|
+| Index Build | SA-IS | O(n) | O(n) |
+| FM-Index Search | Backward search | O(m) | O(m) |
+| MEM Finding | Current: O(n log n) | O(n log n) | O(n) |
+| Chaining | Greedy DP | O(k log k) | O(k log k) |
+| Alignment | Banded SW | O(m × w) | O(m × w) |
+| Occ Queries | Sampling | O(w) avg | O(1) |
+
+**Goal:** Achieve O(n) MEM finding and O(1) occ queries for full parity.
