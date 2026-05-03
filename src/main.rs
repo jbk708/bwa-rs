@@ -122,7 +122,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             }
 
             count += 1;
-            if count % 10000 == 0 {
+            if count.is_multiple_of(10000) {
                 eprintln!("Processed {} read pairs", count);
             }
         }
@@ -135,7 +135,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             write_sam_record(&mut output, &r1.qname, &result, false)?;
             count += 1;
 
-            if count % 10000 == 0 {
+            if count.is_multiple_of(10000) {
                 eprintln!("Processed {} reads", count);
             }
         }

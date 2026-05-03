@@ -8,9 +8,9 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 35 |
+| ✅ Done | 36 |
 | 🔄 In Progress | 0 |
-| ⬜ Pending | 4 |
+| ⬜ Pending | 3 |
 | **Total** | **39** |
 
 ---
@@ -31,15 +31,15 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ## Future Optimization Tickets
 
-### T42: Implement true SIMD Smith-Waterman
+### T42: Implement true SIMD Smith-Waterman ✅
 
 **Description:** Vectorize the Smith-Waterman DP using AVX2/AVX-512 instead of scalar fallback.
 
 **Deliverables:**
-- [ ] Implement 8-lane AVX2 SW using `wide` crate
-- [ ] Implement 16-lane AVX-512 SW for supported hardware
-- [ ] Verify correctness against scalar baseline
-- [ ] Add CPU feature detection with runtime dispatch
+- [x] Implement 8-lane AVX2 SW using intrinsics
+- [x] Implement 16-lane AVX-512 SW for supported hardware
+- [x] Verify correctness against scalar baseline
+- [x] Add CPU feature detection with runtime dispatch
 
 **Dependencies:** None
 
