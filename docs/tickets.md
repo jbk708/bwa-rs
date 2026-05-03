@@ -8,8 +8,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 11 |
-| 🔄 In Progress | 7 |
+| ✅ Done | 14 |
+| 🔄 In Progress | 4 |
 | **Total** | **18** |
 
 ---
@@ -31,7 +31,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T1: Consolidate duplicate encoding functions
 
-**Status:** ⬜ Pending
+**Status:** ✅ Done
 
 **Description:** encode_sequence() is duplicated in sa.rs and reference.rs. Extract to a shared location.
 
@@ -43,7 +43,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T2: Merge duplicate MD tag generation
 
-**Status:** ⬜ Pending
+**Status:** ✅ Done
 
 **Description:** mdz_string() exists in both alignment.rs and types.rs producing identical output.
 
@@ -55,7 +55,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T3: Deduplicate Cigar compression
 
-**Status:** ⬜ Pending
+**Status:** ✅ Done
 
 **Description:** compress_cigar() is copy-pasted in alignment.rs and simd_sw.rs.
 
