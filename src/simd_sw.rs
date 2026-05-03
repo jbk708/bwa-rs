@@ -136,10 +136,10 @@ unsafe fn avx2_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) 
         return 0;
     }
 
-    let match_score = scoring.match_score as i32;
-    let mismatch_penalty = scoring.mismatch_penalty as i32;
-    let gap_open = scoring.gap_open as i32;
-    let gap_extend = scoring.gap_extend as i32;
+    let match_score = scoring.match_score;
+    let mismatch_penalty = scoring.mismatch_penalty;
+    let gap_open = scoring.gap_open;
+    let gap_extend = scoring.gap_extend;
 
     let lanes = 8;
     let cols = r_len + 1;
@@ -240,10 +240,10 @@ unsafe fn avx512_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring
         return 0;
     }
 
-    let match_score = scoring.match_score as i32;
-    let mismatch_penalty = scoring.mismatch_penalty as i32;
-    let gap_open = scoring.gap_open as i32;
-    let gap_extend = scoring.gap_extend as i32;
+    let match_score = scoring.match_score;
+    let mismatch_penalty = scoring.mismatch_penalty;
+    let gap_open = scoring.gap_open;
+    let gap_extend = scoring.gap_extend;
 
     let lanes = 16;
     let cols = r_len + 1;
