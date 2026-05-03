@@ -105,7 +105,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T7: Remove stored reference from FMIndex
 
-**Status:** ⬜ Pending
+**Status:** ✅ Done
 
 **Description:** reference: Vec<u8> field is stored but never used (method is #[allow(dead_code)]).
 

@@ -167,8 +167,6 @@ pub struct FMIndex {
     occ: OccTable,
     f_column: [u32; 5],
     len: usize,
-    #[allow(dead_code)]
-    reference: Vec<u8>,
 }
 
 impl FMIndex {
@@ -197,13 +195,7 @@ impl FMIndex {
             occ,
             f_column,
             len,
-            reference: sequence.to_vec(),
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn reference(&self) -> &[u8] {
-        &self.reference
     }
 
     pub fn search(&self, pattern: &[u8]) -> (usize, usize) {
@@ -300,7 +292,6 @@ impl FMIndex {
             occ,
             f_column,
             len,
-            reference: Vec::new(),
         })
     }
 }
