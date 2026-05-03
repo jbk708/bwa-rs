@@ -295,7 +295,7 @@ impl AlignmentResult {
             result.push('0');
         }
 
-        result
+        format!("MD:Z:{}", result)
     }
 }
 
@@ -345,7 +345,7 @@ mod tests {
         let read = vec![0, 1, 2, 3, 0];
         let reference = vec![0, 1, 2, 3, 0];
         let mdz = result.mdz_string(&read, &reference);
-        assert_eq!(mdz, "5");
+        assert_eq!(mdz, "MD:Z:5");
     }
 
     #[test]
@@ -367,7 +367,7 @@ mod tests {
         let read = vec![0, 1, 2, 1, 2]; // A, C, G, C, G
         let reference = vec![0, 1, 2, 3, 2]; // A, C, G, T, G
         let mdz = result.mdz_string(&read, &reference);
-        assert_eq!(mdz, "3T1");
+        assert_eq!(mdz, "MD:Z:3T1");
     }
 
     #[test]
@@ -393,7 +393,7 @@ mod tests {
         let read = vec![0, 1, 3, 0]; // ACTA
         let reference = vec![0, 1, 2, 3, 3, 0]; // ACGTTA encoding: A=0,C=1,G=2,T=3,T=3,A=0
         let mdz = result.mdz_string(&read, &reference);
-        assert_eq!(mdz, "2^GT2");
+        assert_eq!(mdz, "MD:Z:2^GT2");
     }
 
     #[test]
@@ -424,7 +424,7 @@ mod tests {
                                                 // 2=: ref[3,4]=TA match, q_pos=5, r_pos=5
                                                 // 1D: ref[5]=C deleted, r_pos=6
         let mdz = result.mdz_string(&read, &reference);
-        assert_eq!(mdz, "2T2^C");
+        assert_eq!(mdz, "MD:Z:2T2^C");
     }
 
     #[test]
@@ -446,7 +446,7 @@ mod tests {
         let read = vec![0, 1, 2, 3, 0]; // ACGTA
         let reference = vec![0, 1, 2, 3, 0, 1]; // ACGTAC
         let mdz = result.mdz_string(&read, &reference);
-        assert_eq!(mdz, "5");
+        assert_eq!(mdz, "MD:Z:5");
     }
 
     #[test]
@@ -467,6 +467,6 @@ mod tests {
         let read = vec![0, 1, 2]; // ACG
         let reference = vec![3, 2, 1]; // TGC
         let mdz = result.mdz_string(&read, &reference);
-        assert_eq!(mdz, "TGC");
+        assert_eq!(mdz, "MD:Z:TGC");
     }
 }
