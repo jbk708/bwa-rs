@@ -125,32 +125,33 @@ impl OccTable {
     }
 
     fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_all(&self.bwt)
+        writer.write_all(&self.bwt)?;
+        let n = self.counts.len() as u32;
+        writer.write_all(&n.to_le_bytes())?;
+        for count in &self.counts {
+            for &v in count {
+                writer.write_all(&v.to_le_bytes())?;
+            }
+        }
+        Ok(())
     }
 
     fn read_from(reader: &mut impl Read, sample_rate: usize, bwt_len: usize) -> io::Result<Self> {
         let mut bwt = vec![0u8; bwt_len];
         reader.read_exact(&mut bwt)?;
-
-        // Recreate the occurrence table from the BWT
-        let mut counts = Vec::new();
-        let mut total = [0u32; 5];
-        let mut last_sample = [0u32; 5];
-
-        for (i, &c) in bwt.iter().enumerate() {
-            if c < 4 {
-                total[c as usize] += 1;
+        let mut n_bytes = [0u8; 4];
+        reader.read_exact(&mut n_bytes)?;
+        let n = u32::from_le_bytes(n_bytes) as usize;
+        let mut counts = Vec::with_capacity(n);
+        for _ in 0..n {
+            let mut count = [0u32; 5];
+            for v in &mut count {
+                let mut bytes = [0u8; 4];
+                reader.read_exact(&mut bytes)?;
+                *v = u32::from_le_bytes(bytes);
             }
-            if i % sample_rate == 0 {
-                counts.push(last_sample);
-                last_sample = total;
-            }
+            counts.push(count);
         }
-
-        if !bwt.is_empty() {
-            counts.push(total);
-        }
-
         Ok(Self {
             counts,
             sample_rate,
