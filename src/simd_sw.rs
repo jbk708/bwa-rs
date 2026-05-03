@@ -633,8 +633,16 @@ mod tests {
         let simd_result = nw_score(&query, &reference, &scoring);
 
         // Verify both return valid positive scores
-        assert!(scalar_result > 0, "Scalar should return positive score, got {}", scalar_result);
-        assert!(simd_result >= 0, "SIMD should return non-negative score, got {}", simd_result);
+        assert!(
+            scalar_result > 0,
+            "Scalar should return positive score, got {}",
+            scalar_result
+        );
+        assert!(
+            simd_result >= 0,
+            "SIMD should return non-negative score, got {}",
+            simd_result
+        );
     }
 
     #[test]
@@ -647,7 +655,13 @@ mod tests {
         let simd_result = extend_forward_simd(&query, &reference, 0, &scoring, 16);
 
         // Verify both return valid results
-        assert!(scalar_result.score >= 0, "Scalar should return non-negative score");
-        assert!(simd_result.score >= 0, "SIMD should return non-negative score");
+        assert!(
+            scalar_result.score >= 0,
+            "Scalar should return non-negative score"
+        );
+        assert!(
+            simd_result.score >= 0,
+            "SIMD should return non-negative score"
+        );
     }
 }
