@@ -175,12 +175,24 @@ unsafe fn avx2_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) 
                 }
             }
             let base_match_vec = _mm256_set_epi32(
-                match_vals[7], match_vals[6], match_vals[5], match_vals[4],
-                match_vals[3], match_vals[2], match_vals[1], match_vals[0],
+                match_vals[7],
+                match_vals[6],
+                match_vals[5],
+                match_vals[4],
+                match_vals[3],
+                match_vals[2],
+                match_vals[1],
+                match_vals[0],
             );
             let base_mismatch_vec = _mm256_set_epi32(
-                mismatch_vals[7], mismatch_vals[6], mismatch_vals[5], mismatch_vals[4],
-                mismatch_vals[3], mismatch_vals[2], mismatch_vals[1], mismatch_vals[0],
+                mismatch_vals[7],
+                mismatch_vals[6],
+                mismatch_vals[5],
+                mismatch_vals[4],
+                mismatch_vals[3],
+                mismatch_vals[2],
+                mismatch_vals[1],
+                mismatch_vals[0],
             );
 
             let diag_prev = _mm256_loadu_si256(dp_prev.as_ptr().add(j - 1) as *const __m256i);
@@ -269,16 +281,40 @@ unsafe fn avx512_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring
                 }
             }
             let base_match_vec = _mm512_set_epi32(
-                match_vals[15], match_vals[14], match_vals[13], match_vals[12],
-                match_vals[11], match_vals[10], match_vals[9], match_vals[8],
-                match_vals[7], match_vals[6], match_vals[5], match_vals[4],
-                match_vals[3], match_vals[2], match_vals[1], match_vals[0],
+                match_vals[15],
+                match_vals[14],
+                match_vals[13],
+                match_vals[12],
+                match_vals[11],
+                match_vals[10],
+                match_vals[9],
+                match_vals[8],
+                match_vals[7],
+                match_vals[6],
+                match_vals[5],
+                match_vals[4],
+                match_vals[3],
+                match_vals[2],
+                match_vals[1],
+                match_vals[0],
             );
             let base_mismatch_vec = _mm512_set_epi32(
-                mismatch_vals[15], mismatch_vals[14], mismatch_vals[13], mismatch_vals[12],
-                mismatch_vals[11], mismatch_vals[10], mismatch_vals[9], mismatch_vals[8],
-                mismatch_vals[7], mismatch_vals[6], mismatch_vals[5], mismatch_vals[4],
-                mismatch_vals[3], mismatch_vals[2], mismatch_vals[1], mismatch_vals[0],
+                mismatch_vals[15],
+                mismatch_vals[14],
+                mismatch_vals[13],
+                mismatch_vals[12],
+                mismatch_vals[11],
+                mismatch_vals[10],
+                mismatch_vals[9],
+                mismatch_vals[8],
+                mismatch_vals[7],
+                mismatch_vals[6],
+                mismatch_vals[5],
+                mismatch_vals[4],
+                mismatch_vals[3],
+                mismatch_vals[2],
+                mismatch_vals[1],
+                mismatch_vals[0],
             );
 
             let diag_prev = _mm512_loadu_si512(dp_prev.as_ptr().add(j - 1) as *const __m512i);
