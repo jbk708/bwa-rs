@@ -1034,7 +1034,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_mdz_string_complex() {
         let mut cigar = Cigar::new();
         cigar.push(CigarOp::Eq, 2);

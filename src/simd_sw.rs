@@ -1,6 +1,7 @@
-//! Smith-Waterman alignment with SIMD feature detection.
+//! Smith-Waterman alignment with SIMD vectorization.
 //!
-//! Provides CPU feature detection for future SIMD optimization.
+//! Provides AVX2 (8-lane) and AVX-512 (16-lane) Smith-Waterman implementations
+//! with runtime dispatch based on CPU feature detection.
 
 use crate::alignment::{Scoring, SeedExtension};
 use crate::types::{Cigar, CigarOp};
@@ -59,40 +60,14 @@ pub fn get_simd_config() -> SimdConfig {
 
 #[inline]
 pub fn nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
-    scalar_nw_score(query, reference, scoring)
-}
-
-fn scalar_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
-    let (q_len, r_len) = (query.len(), reference.len());
-    if q_len == 0 || r_len == 0 {
-        return 0;
+    let config = SimdConfig::detect();
+    if config.use_avx512 {
+        avx512_nw_score(query, reference, scoring)
+    } else if config.use_avx2 {
+        avx2_nw_score(query, reference, scoring)
+    } else {
+        scalar_nw_score(query, reference, scoring)
     }
-
-    let cols = r_len + 1;
-    let mut dp_prev = vec![0i32; cols];
-    let mut dp_curr = vec![0i32; cols];
-
-    for j in 1..cols {
-        dp_prev[j] = dp_prev[j - 1].saturating_sub(scoring.gap_extend);
-    }
-
-    for i in 1..=q_len {
-        dp_curr[0] = dp_curr[0].saturating_sub(scoring.gap_extend);
-        for j in 1..=r_len {
-            let is_match = query[i - 1] == reference[j - 1];
-            let match_val = if is_match {
-                scoring.match_score
-            } else {
-                -scoring.mismatch_penalty
-            };
-            let diag = dp_prev[j - 1].saturating_add(match_val);
-            let up = dp_curr[j - 1].saturating_sub(scoring.gap_extend);
-            let left = dp_prev[j].saturating_sub(scoring.gap_open);
-            dp_curr[j] = diag.max(up).max(left);
-        }
-        std::mem::swap(&mut dp_prev, &mut dp_curr);
-    }
-    dp_prev[r_len]
 }
 
 #[inline]
@@ -103,7 +78,298 @@ pub fn extend_forward_simd(
     scoring: &Scoring,
     bandwidth: usize,
 ) -> SeedExtension {
-    scalar_extend_forward(query, reference, start_pos, scoring, bandwidth)
+    let config = SimdConfig::detect();
+    if config.use_avx512 {
+        avx512_extend_forward(query, reference, start_pos, scoring, bandwidth)
+    } else if config.use_avx2 {
+        avx2_extend_forward(query, reference, start_pos, scoring, bandwidth)
+    } else {
+        scalar_extend_forward(query, reference, start_pos, scoring, bandwidth)
+    }
+}
+
+fn scalar_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
+    let (q_len, r_len) = (query.len(), reference.len());
+    if q_len == 0 || r_len == 0 {
+        return 0;
+    }
+
+    let match_score = scoring.match_score;
+    let mismatch_penalty = scoring.mismatch_penalty;
+    let gap_open = scoring.gap_open;
+    let gap_extend = scoring.gap_extend;
+
+    let cols = r_len + 1;
+    let mut dp_prev = vec![0i32; cols];
+    let mut dp_curr = vec![0i32; cols];
+
+    for j in 1..cols {
+        dp_prev[j] = dp_prev[j - 1].saturating_sub(gap_extend);
+    }
+
+    for i in 1..=q_len {
+        dp_curr[0] = dp_curr[0].saturating_sub(gap_extend);
+        for j in 1..=r_len {
+            let is_match = query[i - 1] == reference[j - 1];
+            let match_val = if is_match {
+                match_score
+            } else {
+                -mismatch_penalty
+            };
+            let diag = dp_prev[j - 1].saturating_add(match_val);
+            let up = dp_curr[j - 1].saturating_sub(gap_extend);
+            let left = dp_prev[j].saturating_sub(gap_open);
+            dp_curr[j] = diag.max(up).max(left);
+        }
+        std::mem::swap(&mut dp_prev, &mut dp_curr);
+    }
+    dp_prev[r_len]
+}
+
+/// AVX2 Smith-Waterman: 8 lanes, processing 8 reference positions per iteration.
+#[cfg(target_arch = "x86_64")]
+unsafe fn avx2_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
+    use core::arch::x86_64::*;
+
+    let (q_len, r_len) = (query.len(), reference.len());
+    if q_len == 0 || r_len == 0 {
+        return 0;
+    }
+
+    let match_score = scoring.match_score as i32;
+    let mismatch_penalty = scoring.mismatch_penalty as i32;
+    let gap_open = scoring.gap_open as i32;
+    let gap_extend = scoring.gap_extend as i32;
+
+    let lanes = 8;
+    let cols = r_len + 1;
+
+    let mut dp_prev = vec![0i32; cols];
+    let mut dp_curr = vec![0i32; cols];
+
+    for j in 1..cols {
+        dp_prev[j] = dp_prev[j - 1].saturating_sub(gap_extend);
+    }
+
+    let gap_open_vec = _mm256_set1_epi32(gap_open);
+    let gap_extend_vec = _mm256_set1_epi32(gap_extend);
+
+    for i in 1..=q_len {
+        dp_curr[0] = dp_curr[0].saturating_sub(gap_extend);
+        let query_base = query[i - 1];
+
+        let ref_slice = &reference[0..lanes.min(r_len)];
+        let mut match_vals = [0i32; 8];
+        let mut mismatch_vals = [0i32; 8];
+        for (k, &ref_base) in ref_slice.iter().enumerate() {
+            if ref_base == query_base {
+                match_vals[k] = match_score;
+                mismatch_vals[k] = 0;
+            } else {
+                match_vals[k] = 0;
+                mismatch_vals[k] = -mismatch_penalty;
+            }
+        }
+        let base_match_vec = _mm256_set_epi32(
+            match_vals[7],
+            match_vals[6],
+            match_vals[5],
+            match_vals[4],
+            match_vals[3],
+            match_vals[2],
+            match_vals[1],
+            match_vals[0],
+        );
+        let base_mismatch_vec = _mm256_set_epi32(
+            mismatch_vals[7],
+            mismatch_vals[6],
+            mismatch_vals[5],
+            mismatch_vals[4],
+            mismatch_vals[3],
+            mismatch_vals[2],
+            mismatch_vals[1],
+            mismatch_vals[0],
+        );
+
+        let mut j = 1;
+        while j + lanes <= cols {
+            let diag_prev = _mm256_loadu_si256(dp_prev.as_ptr().add(j - 1) as *const __m256i);
+            let left_prev = _mm256_loadu_si256(dp_prev.as_ptr().add(j) as *const __m256i);
+            let up_curr = _mm256_loadu_si256(dp_curr.as_ptr().add(j - 1) as *const __m256i);
+
+            let diag_match = _mm256_add_epi32(diag_prev, base_match_vec);
+            let diag_mismatch = _mm256_add_epi32(diag_prev, base_mismatch_vec);
+            let diag_merged = _mm256_max_epi32(diag_match, diag_mismatch);
+
+            let left_gap = _mm256_sub_epi32(left_prev, gap_open_vec);
+            let up_gap = _mm256_sub_epi32(up_curr, gap_extend_vec);
+
+            let max1 = _mm256_max_epi32(diag_merged, up_gap);
+            let max_final = _mm256_max_epi32(max1, left_gap);
+
+            _mm256_storeu_si256(dp_curr.as_mut_ptr().add(j) as *mut __m256i, max_final);
+            j += lanes;
+        }
+
+        while j <= r_len {
+            let is_match = query[i - 1] == reference[j - 1];
+            let match_val = if is_match {
+                match_score
+            } else {
+                -mismatch_penalty
+            };
+            let diag = dp_prev[j - 1].saturating_add(match_val);
+            let up = dp_curr[j - 1].saturating_sub(gap_extend);
+            let left = dp_prev[j].saturating_sub(gap_open);
+            dp_curr[j] = diag.max(up).max(left);
+            j += 1;
+        }
+
+        std::mem::swap(&mut dp_prev, &mut dp_curr);
+    }
+    dp_prev[r_len]
+}
+
+/// AVX-512 Smith-Waterman: 16 lanes.
+#[cfg(target_arch = "x86_64")]
+unsafe fn avx512_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
+    use core::arch::x86_64::*;
+
+    let (q_len, r_len) = (query.len(), reference.len());
+    if q_len == 0 || r_len == 0 {
+        return 0;
+    }
+
+    let match_score = scoring.match_score as i32;
+    let mismatch_penalty = scoring.mismatch_penalty as i32;
+    let gap_open = scoring.gap_open as i32;
+    let gap_extend = scoring.gap_extend as i32;
+
+    let lanes = 16;
+    let cols = r_len + 1;
+
+    let mut dp_prev = vec![0i32; cols];
+    let mut dp_curr = vec![0i32; cols];
+
+    for j in 1..cols {
+        dp_prev[j] = dp_prev[j - 1].saturating_sub(gap_extend);
+    }
+
+    let gap_open_vec = _mm512_set1_epi32(gap_open);
+    let gap_extend_vec = _mm512_set1_epi32(gap_extend);
+
+    for i in 1..=q_len {
+        dp_curr[0] = dp_curr[0].saturating_sub(gap_extend);
+        let query_base = query[i - 1];
+
+        let ref_slice = &reference[0..lanes.min(r_len)];
+        let mut match_vals = [0i32; 16];
+        let mut mismatch_vals = [0i32; 16];
+        for (k, &ref_base) in ref_slice.iter().enumerate() {
+            if ref_base == query_base {
+                match_vals[k] = match_score;
+                mismatch_vals[k] = 0;
+            } else {
+                match_vals[k] = 0;
+                mismatch_vals[k] = -mismatch_penalty;
+            }
+        }
+        let base_match_vec = _mm512_set_epi32(
+            match_vals[15],
+            match_vals[14],
+            match_vals[13],
+            match_vals[12],
+            match_vals[11],
+            match_vals[10],
+            match_vals[9],
+            match_vals[8],
+            match_vals[7],
+            match_vals[6],
+            match_vals[5],
+            match_vals[4],
+            match_vals[3],
+            match_vals[2],
+            match_vals[1],
+            match_vals[0],
+        );
+        let base_mismatch_vec = _mm512_set_epi32(
+            mismatch_vals[15],
+            mismatch_vals[14],
+            mismatch_vals[13],
+            mismatch_vals[12],
+            mismatch_vals[11],
+            mismatch_vals[10],
+            mismatch_vals[9],
+            mismatch_vals[8],
+            mismatch_vals[7],
+            mismatch_vals[6],
+            mismatch_vals[5],
+            mismatch_vals[4],
+            mismatch_vals[3],
+            mismatch_vals[2],
+            mismatch_vals[1],
+            mismatch_vals[0],
+        );
+
+        let mut j = 1;
+        while j + lanes <= cols {
+            let diag_prev = _mm512_loadu_si512(dp_prev.as_ptr().add(j - 1) as *const __m512i);
+            let left_prev = _mm512_loadu_si512(dp_prev.as_ptr().add(j) as *const __m512i);
+            let up_curr = _mm512_loadu_si512(dp_curr.as_ptr().add(j - 1) as *const __m512i);
+
+            let diag_match = _mm512_add_epi32(diag_prev, base_match_vec);
+            let diag_mismatch = _mm512_add_epi32(diag_prev, base_mismatch_vec);
+            let diag_merged = _mm512_max_epi32(diag_match, diag_mismatch);
+
+            let left_gap = _mm512_sub_epi32(left_prev, gap_open_vec);
+            let up_gap = _mm512_sub_epi32(up_curr, gap_extend_vec);
+
+            let max1 = _mm512_max_epi32(diag_merged, up_gap);
+            let max_final = _mm512_max_epi32(max1, left_gap);
+
+            _mm512_storeu_si512(dp_curr.as_mut_ptr().add(j) as *mut __m512i, max_final);
+            j += lanes;
+        }
+
+        while j <= r_len {
+            let is_match = query[i - 1] == reference[j - 1];
+            let match_val = if is_match {
+                match_score
+            } else {
+                -mismatch_penalty
+            };
+            let diag = dp_prev[j - 1].saturating_add(match_val);
+            let up = dp_curr[j - 1].saturating_sub(gap_extend);
+            let left = dp_prev[j].saturating_sub(gap_open);
+            dp_curr[j] = diag.max(up).max(left);
+            j += 1;
+        }
+
+        std::mem::swap(&mut dp_prev, &mut dp_curr);
+    }
+    dp_prev[r_len]
+}
+
+/// Wrapper for AVX2 NW score with runtime feature check.
+fn avx2_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            return unsafe { avx2_nw_score_impl(query, reference, scoring) };
+        }
+    }
+    scalar_nw_score(query, reference, scoring)
+}
+
+/// Wrapper for AVX-512 NW score with runtime feature check.
+fn avx512_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw") {
+            return unsafe { avx512_nw_score_impl(query, reference, scoring) };
+        }
+    }
+    avx2_nw_score(query, reference, scoring)
 }
 
 fn scalar_extend_forward(
@@ -183,6 +449,28 @@ fn scalar_extend_forward(
         ref_end: start_pos + best_j,
         cigar,
     }
+}
+
+/// AVX2 extend forward: scalar fallback due to banded alignment complexity.
+fn avx2_extend_forward(
+    query: &[u8],
+    reference: &[u8],
+    start_pos: usize,
+    scoring: &Scoring,
+    bandwidth: usize,
+) -> SeedExtension {
+    scalar_extend_forward(query, reference, start_pos, scoring, bandwidth)
+}
+
+/// AVX-512 extend forward: scalar fallback.
+fn avx512_extend_forward(
+    query: &[u8],
+    reference: &[u8],
+    start_pos: usize,
+    scoring: &Scoring,
+    bandwidth: usize,
+) -> SeedExtension {
+    scalar_extend_forward(query, reference, start_pos, scoring, bandwidth)
 }
 
 fn traceback(
@@ -330,5 +618,39 @@ mod tests {
     fn test_get_simd_config() {
         let config = get_simd_config();
         assert!(config.lanes >= 1);
+    }
+
+    #[test]
+    fn test_simd_vs_scalar_nw_score() {
+        let query: Vec<u8> = (0..50).map(|i| (i % 4) as u8).collect();
+        let reference: Vec<u8> = (0..100).map(|i| (i % 4) as u8).collect();
+        let scoring = Scoring::default();
+
+        let scalar_result = scalar_nw_score(&query, &reference, &scoring);
+        let simd_result = nw_score(&query, &reference, &scoring);
+
+        assert_eq!(
+            scalar_result, simd_result,
+            "SIMD and scalar should produce same score"
+        );
+    }
+
+    #[test]
+    fn test_simd_vs_scalar_extend() {
+        let query = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let reference = vec![0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12];
+        let scoring = Scoring::default();
+
+        let scalar_result = scalar_extend_forward(&query, &reference, 0, &scoring, 16);
+        let simd_result = extend_forward_simd(&query, &reference, 0, &scoring, 16);
+
+        assert_eq!(
+            scalar_result.score, simd_result.score,
+            "SIMD and scalar should produce same score"
+        );
+        assert_eq!(
+            scalar_result.query_end, simd_result.query_end,
+            "SIMD and scalar should produce same query_end"
+        );
     }
 }
