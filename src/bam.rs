@@ -155,7 +155,7 @@ impl<W: Write> BAMWriter<W> {
         let bin = Self::calculate_bin(record.pos, record.pos.saturating_add(ref_len));
 
         let mut l_qname = record.qname.len() as u32 + 1;
-        while l_qname % 4 != 0 {
+        while !l_qname.is_multiple_of(4) {
             l_qname += 1;
         }
 

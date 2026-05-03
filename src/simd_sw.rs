@@ -128,6 +128,7 @@ fn scalar_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
 
 /// AVX2 Smith-Waterman: 8 lanes, processing 8 reference positions per iteration.
 #[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
 unsafe fn avx2_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
     use core::arch::x86_64::*;
 
@@ -232,6 +233,7 @@ unsafe fn avx2_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) 
 
 /// AVX-512 Smith-Waterman: 16 lanes.
 #[cfg(target_arch = "x86_64")]
+#[allow(unsafe_code)]
 unsafe fn avx512_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
     use core::arch::x86_64::*;
 
