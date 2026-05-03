@@ -8,8 +8,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 15 |
-| 🔄 In Progress | 3 |
+| ✅ Done | 16 |
+| 🔄 In Progress | 2 |
 | **Total** | **18** |
 
 ---
@@ -80,7 +80,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T5: Remove unused dependencies
 
-**Status:** 🟡 In Progress
+**Status:** ✅ Done
 
 **Description:** succinct crate imported but RrrBitvec never used by main code.
 
