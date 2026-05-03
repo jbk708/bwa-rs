@@ -8,8 +8,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 16 |
-| 🔄 In Progress | 2 |
+| ✅ Done | 17 |
+| 🔄 In Progress | 1 |
 | **Total** | **18** |
 
 ---
@@ -92,7 +92,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T6: Optimize FM-index serialization
 
-**Status:** 🟡 In Progress
+**Status:** ✅ Done
 
 **Description:** OccTable::read_from() reconstructs counts from BWT instead of reading pre-computed values.
 
