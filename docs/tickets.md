@@ -67,7 +67,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T4: Remove dead SIMD code paths
 
-**Status:** ⬜ Pending
+**Status:** 🟡 In Progress
 
 **Description:** simd_affine.rs AVX2 function falls back to scalar at end. AVX512 is stub-only.
 
