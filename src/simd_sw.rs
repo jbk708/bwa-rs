@@ -353,6 +353,7 @@ unsafe fn avx512_nw_score_impl(query: &[u8], reference: &[u8], scoring: &Scoring
 }
 
 /// Wrapper for AVX2 NW score with runtime feature check.
+#[allow(unsafe_code)]
 fn avx2_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
     #[cfg(target_arch = "x86_64")]
     {
@@ -364,6 +365,7 @@ fn avx2_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
 }
 
 /// Wrapper for AVX-512 NW score with runtime feature check.
+#[allow(unsafe_code)]
 fn avx512_nw_score(query: &[u8], reference: &[u8], scoring: &Scoring) -> i32 {
     #[cfg(target_arch = "x86_64")]
     {
