@@ -677,29 +677,7 @@ fn traceback_affine(
     }
 
     ops.reverse();
-    compress_cigar(ops)
-}
-
-fn compress_cigar(ops: Vec<CigarOp>) -> Cigar {
-    let mut cigar = Cigar::new();
-    if ops.is_empty() {
-        return cigar;
-    }
-
-    let mut current_op = ops[0];
-    let mut current_len = 1u32;
-
-    for op in ops.iter().skip(1) {
-        if *op == current_op {
-            current_len += 1;
-        } else {
-            cigar.push(current_op, current_len);
-            current_op = *op;
-            current_len = 1;
-        }
-    }
-    cigar.push(current_op, current_len);
-    cigar
+    Cigar::compress(ops)
 }
 
 #[cfg(test)]

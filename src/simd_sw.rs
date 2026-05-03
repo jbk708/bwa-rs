@@ -234,27 +234,7 @@ fn traceback(
         j -= 1;
     }
     ops.reverse();
-    compress_cigar(ops)
-}
-
-fn compress_cigar(ops: Vec<CigarOp>) -> Cigar {
-    let mut cigar = Cigar::new();
-    if ops.is_empty() {
-        return cigar;
-    }
-    let mut current_op = ops[0];
-    let mut current_len = 1u32;
-    for op in ops.iter().skip(1) {
-        if *op == current_op {
-            current_len += 1;
-        } else {
-            cigar.push(current_op, current_len);
-            current_op = *op;
-            current_len = 1;
-        }
-    }
-    cigar.push(current_op, current_len);
-    cigar
+    Cigar::compress(ops)
 }
 
 #[cfg(test)]
@@ -334,7 +314,7 @@ mod tests {
             CigarOp::X,
             CigarOp::X,
         ];
-        let cigar = compress_cigar(ops);
+        let cigar = Cigar::compress(ops);
         assert_eq!(cigar.ops.len(), 2);
         assert_eq!(cigar.ops[0], (CigarOp::Eq, 3));
         assert_eq!(cigar.ops[1], (CigarOp::X, 2));
@@ -342,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_compress_cigar_empty() {
-        let cigar = compress_cigar(vec![]);
+        let cigar = Cigar::compress(vec![]);
         assert!(cigar.ops.is_empty());
     }
 
