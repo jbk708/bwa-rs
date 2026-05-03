@@ -3,7 +3,6 @@
 //! This module provides O(n) suffix array construction via the sa-is crate
 //! and integer alphabet support via libsais-rs for efficient radix sorting.
 
-use crate::utils::encode_sequence;
 use std::io::{Read, Write};
 
 pub use crate::utils::{encode_sequence, encode_sequence_u16};
