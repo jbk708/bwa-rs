@@ -92,7 +92,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ### T6: Optimize FM-index serialization
 
-**Status:** ⬜ Pending
+**Status:** 🟡 In Progress
 
 **Description:** OccTable::read_from() reconstructs counts from BWT instead of reading pre-computed values.
 
