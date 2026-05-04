@@ -79,10 +79,16 @@ let index = FMIndex::build(&ref); // crashes
 **Deliverables:**
 - [ ] Identify root cause (alphabet size handling? buffer overflow?)
 - [ ] Fix sa-is integration or switch to alternative SA construction
+- [ ] Benchmark SA construction performance vs bwa (currently ~7.5x slower)
+- [ ] Optimize SA construction to match bwa indexing speed
 - [ ] Verify with E. coli genome (~4.7MB)
 - [ ] Add regression test for large sequences
 
 **Dependencies:** None
+
+**Performance target:**
+- Current: bwa-rs indexing ~7.5x slower than bwa (5KB test)
+- Goal: Match or exceed bwa indexing performance on large genomes
 
 **Potential solutions:**
 1. Fix sa-is crate configuration (alphabet size parameter)
