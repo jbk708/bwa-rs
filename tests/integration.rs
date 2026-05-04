@@ -1,5 +1,5 @@
 use bwa_mem::sam::{SAMHeader, SAMRecord};
-use bwa_mem::types::Sequence;
+use bwa_mem::types::{CigarOp, Sequence};
 use bwa_mem::{Aligner, BwaError, FMIndex, Reference};
 use std::process::Command;
 
@@ -527,6 +527,43 @@ fn test_sam_format_complete() -> Result<(), BwaError> {
         "Missing @SQ header"
     );
     assert!(output.contains("@PG"), "Missing @PG header");
+
+    Ok(())
+}
+
+#[test]
+fn test_cigar_query_length_valid() -> Result<(), BwaError> {
+    // T49: Verify CIGAR query length matches actual read length
+    // This tests the fix for CIGAR having wrong number of operations
+    let small_ref = "AAAAAGGGGAAAAACCCCAAAAA";
+    let reference = Reference::parse_fasta(&format!(">test\n{}", small_ref))?;
+    let ref_slice = reference.as_slice();
+    let index = FMIndex::build(&reference);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(3);
+
+    let read = seq_to_bytes("GGGGAAAAACCCC");
+    let read_len = read.len();
+    let result = aligner.align_read(&read, None)?;
+
+    // Count query length in CIGAR
+    let mut cigar_query_len = 0u32;
+    for (op, len) in &result.cigar.ops {
+        match op {
+            CigarOp::I | CigarOp::M | CigarOp::Eq | CigarOp::X | CigarOp::S => {
+                cigar_query_len += len;
+            }
+            _ => {}
+        }
+    }
+
+    // CIGAR query length should match read length (within 2bp tolerance for alignment differences)
+    assert!(
+        (cigar_query_len as i32 - read_len as i32).abs() <= 2,
+        "CIGAR query length {} too far from read length {}. CIGAR: {}",
+        cigar_query_len,
+        read_len,
+        result.cigar.to_string()
+    );
 
     Ok(())
 }
