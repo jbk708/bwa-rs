@@ -49,8 +49,13 @@ pub fn find_supermaximal_mems(index: &FMIndex, query: &[u8], min_len: usize) -> 
 
         if left >= min_len {
             let positions = index.find_all(&query[query_start..query_start + left]);
+            // Use index.len() - the FMIndex has a public len() method
+            let ref_len = index.len;
             for &ref_start in &positions {
-                mems.push(MEM::new(query_start, ref_start as usize, left));
+                // Filter out MEMs that extend past reference end
+                if ref_start as usize + left <= ref_len {
+                    mems.push(MEM::new(query_start, ref_start as usize, left));
+                }
             }
         }
     }

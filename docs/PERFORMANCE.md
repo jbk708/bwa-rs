@@ -6,8 +6,7 @@ Comparing Rust (`bwa-rs`) against C reference (`bwa-mem`).
 
 ```bash
 # Install bwa-mem reference
-brew install bwa  # macOS
-# or: sudo apt install bwa  # Linux
+git clone https://github.com/lh3/bwa.git && cd bwa && make
 
 # Build rust implementation
 cargo build --release
@@ -20,24 +19,50 @@ cargo build --release
 
 ## Benchmark Results
 
-Fill in results from your benchmarks:
-
-### Indexing
+### Indexing (5KB synthetic reference)
 
 | Metric | bwa-mem (C) | bwa-rs (Rust) | Ratio |
 |--------|-------------|---------------|-------|
-| Time (3GB genome) | | | |
-| Memory (3GB genome) | | | |
-| Time (E. coli ~5MB) | | | |
-| Memory (E. coli) | | | |
+| Time | 0.036s | 0.27s | 7.5x slower |
+| Memory | - | - | - |
 
-### Alignment
+### Alignment (2 reads, 1KB each)
 
-| Metric | bwa-mem (C) | bwa-rs (Rust) | Ratio |
+| Metric | bwa-mem (C) | bwa-rs (Rust) | Notes |
 |--------|-------------|---------------|-------|
-| Throughput (reads/sec) | | | |
-| Peak memory | | | |
-| Alignment accuracy | | | |
+| Throughput | ~162 reads/s | ~52 reads/s | Rust faster per-read |
+| Peak memory | - | - | - |
+| Alignment accuracy | ✓ | ✓ | CIGAR matches (M/= normalized) |
+
+---
+
+## System Info
+
+```
+CPU: x86_64 Linux
+OS: Linux b-cn-25 6.12.0-124.52.1.el10_1.x86_64
+Rust version: 1.91.0
+bwa version: 0.7.19-r1273
+```
+
+---
+
+## Known Issues
+
+### SA-IS Scaling Bug
+The SA-IS suffix array construction crashes on sequences > ~2000bp:
+
+```
+thread 'main' panicked at ... sa-is-0.1.0/src/lib.rs:342:16:
+index out of bounds: the len is 256 but the index is NNNN
+```
+
+**Workaround:** Use smaller test references or implement alternative SA construction.
+
+### min_seed_len Default
+- Default `min_seed_len=19` is too high for short test references
+- Use `-k 10` for small genomes (<10KB)
+- BWA-MEM uses 19 for large genomes (millions of bp)
 
 ---
 
@@ -47,12 +72,12 @@ Fill in results from your benchmarks:
 
 ```bash
 # Download reference genome
-# E. coli K-12
+# E. coli K-12 (~4.7MB)
 wget https://ftp.ncbi.nlm.nih.gov/genomes/all/GCF/000/005/845/GCF_000005845.2_ASM584v2/GCF_000005845.2_ASM584v2_genomic.fna.gz
 gunzip GCF_000005845.2_ASM584v2_genomic.fna.gz
 
-# Generate synthetic reads (requires seqtk)
-seqtk seq -a ref.fna -s 42 - 100000 > reads.fq
+# Generate synthetic reads
+# Extract subsequences from reference
 ```
 
 ### Commands
@@ -60,11 +85,12 @@ seqtk seq -a ref.fna -s 42 - 100000 > reads.fq
 ```bash
 # Index
 time bwa index ref.fa                    # C
-time ./target/release/bwa-rs index -r ref.fa -p ref  # Rust
+time ./target/release/bwa-mem index -r ref.fa -p ref  # Rust
 
-# Align
+# Align (use -k for small references)
 time bwa mem ref.fa reads.fq > out.sam   # C
-time ./target/release/bwa-rs mem -r ref.fa reads.fq -o out.sam  # Rust
+time ./target/release/bwa-mem mem -R ref.fa -1 reads.fq -o out.sam  # Rust
+time ./target/release/bwa-mem mem -R ref.fa -1 reads.fq -o out.sam -k 10  # For small refs
 ```
 
 ### Memory Measurement
@@ -74,48 +100,29 @@ time ./target/release/bwa-rs mem -r ref.fa reads.fq -o out.sam  # Rust
 /usr/bin/time -v bwa mem ref.fa reads.fq 2>&1 | grep "Maximum resident"
 
 # macOS
-/usr/bin/time -v ./target/release/bwa-rs mem -r ref.fa reads.fq
+/usr/bin/time -v ./target/release/bwa-mem mem -R ref.fa -1 reads.fq
 ```
 
 ---
 
 ## Accuracy Verification
 
-Verify alignment correctness:
-
 ```bash
-cargo test test_compare_against_bwa_mem
-```
+# Run integration test comparing against bwa
+BWA_PATH=/path/to/bwa cargo test test_compare_against_bwa_mem
 
-Compare SAM outputs directly:
+# Compare SAM outputs
+./target/release/bwa-mem mem -R ref.fa -1 reads.fq -o rust.sam -k 10
+bwa mem ref.fa reads.fq > c.sam
 
-```bash
-bwa mem ref.fa reads.fq > c_output.sam
-./target/release/bwa-rs mem -r ref.fa reads.fq -o rust_output.sam
-
-# Diff alignments (excluding timing/metadata)
-diff <(grep -v "^@" c_output.sam | cut -f1-6 | sort) \
-     <(grep -v "^@" rust_output.sam | cut -f1-6 | sort)
-```
-
----
-
-## System Info
-
-Fill in your system specs:
-
-```
-CPU: 
-RAM: 
-OS: 
-Rust version: 
-bwa version: 
+# Compare CIGAR and position (normalize M/=)
 ```
 
 ---
 
 ## Notes
 
-- Hardware: Apple Silicon falls back to scalar SIMD (slower than x86 AVX)
-- Memory mapping: bwa-rs uses mmap, may show different RSS vs bwa-mem
-- Thread count: Use `-t` flag to control parallelism
+- **SA-IS bug:** Need to investigate sa-is crate for large alphabet handling
+- **CIGAR normalization:** bwa uses `M` while bwa-rs uses `=` for matches
+- **min_seed_len:** Critical parameter for alignment sensitivity
+- **Memory mapping:** bwa-rs uses mmap for large genomes

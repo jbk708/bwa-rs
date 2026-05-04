@@ -64,11 +64,11 @@ impl BWT {
 
 #[derive(Clone, Debug)]
 pub struct FMIndex {
-    bwt: BWT,
-    sa: SuffixArray,
-    occ: CompactOccTable,
-    f_column: [u32; 5],
-    len: usize,
+    pub bwt: BWT,
+    pub sa: SuffixArray,
+    pub occ: CompactOccTable,
+    pub f_column: [u32; 5],
+    pub len: usize,
 }
 
 impl FMIndex {

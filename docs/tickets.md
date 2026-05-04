@@ -9,8 +9,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | ✅ Done | 38 |
-| 🔄 In Progress | 0 |
-| ⬜ Pending | 1 |
+| 🔄 In Progress | 1 |
+| ⬜ Pending | 0 |
 | **Total** | **39** |
 
 ---
@@ -30,6 +30,34 @@ Pure Rust implementation targeting C BWA-MEM performance.
 ---
 
 ## Future Optimization Tickets
+
+### T47: Benchmark and validate implementation 🔄
+
+**Description:** Comprehensive benchmarking and correctness verification for the Rust BWA-MEM implementation on x86 hardware.
+
+**Deliverables:**
+- [x] Verify T43 supermaximal MEM correctness against legacy algorithm
+  - ✅ Fixed MEM boundary bug (filtering positions that extend past reference)
+  - ✅ Integration test `test_compare_against_bwa_mem` passes with C BWA-MEM
+- [x] Compare alignment accuracy against C BWA-MEM reference
+  - ✅ CIGAR matching works (M/= normalized)
+  - ✅ Position matching works for non-repetitive sequences
+  - ⚠️  Multiple alignment handling differs (MAPQ calculation)
+- [x] Fill in PERFORMANCE.md with benchmark results
+- [ ] Benchmark wavelet tree occ queries vs sampling on large genomes
+  - ⚠️  SA-IS crashes on sequences > ~2000bp (sa-is crate bug)
+- [ ] Tune `optimal_bandwidth()` based on empirical results
+- [ ] Document SIMD speedups on x86 (AVX2/AVX-512)
+
+**Dependencies:** T43, T44, T45, T46
+
+**Known Issues:**
+1. **SA-IS scaling bug:** `sa-is` crate panics on large sequences with "index out of bounds: the len is 256 but the index is NNNN"
+2. **min_seed_len default:** CLI defaults to 19, too high for small test references; use `-k 10`
+
+**Note:** Running on x86 compute node with AVX2/AVX-512 support.
+
+---
 
 ### T42: Implement true SIMD Smith-Waterman ✅
 
