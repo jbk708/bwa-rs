@@ -19,7 +19,18 @@ cargo build --release
 
 ## Benchmark Results
 
-### Indexing (synthetic references)
+### Indexing vs bwa (C reference)
+
+| Size | bwa (C) | bwa-rs (Rust) | Ratio |
+|------|---------|---------------|-------|
+| 5KB | 3ms | 259ms | 86x |
+| 50KB | 8ms | 255ms | 32x |
+| 500KB | 50ms | 280ms | 5.6x |
+| **5MB** | **494ms** | **470ms** | **1.0x** ✓ |
+
+**Note:** bwa-rs overhead dominates for small sequences. At E. coli scale (~5MB), performance matches bwa.
+
+### Indexing Rate (bwa-rs only)
 
 | Size | Time | Rate |
 |------|------|------|
