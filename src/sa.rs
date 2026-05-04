@@ -13,11 +13,10 @@ pub fn build_sa_integer(seq: &[u8]) -> Vec<u32> {
     if seq.is_empty() {
         return vec![];
     }
-    let encoded = encode_sequence(seq);
-    let n = encoded.len();
+    let n = seq.len();
     let mut sa = vec![0i32; n];
-    // k=5 for 5-symbol alphabet (A,C,G,T,N), fs=0, freq=None
-    libsais_rs::libsais(&encoded, &mut sa, 0, None);
+    // fs=0 for standard SA construction, freq=None for no frequency output
+    libsais_rs::libsais(seq, &mut sa, 0, None);
     sa.into_iter().map(|x| x as u32).collect()
 }
 
@@ -57,10 +56,9 @@ impl SuffixArray {
             return Self { sa: vec![], len: 0 };
         }
 
-        // Use sa-is for O(n) suffix array construction
-        // key_bound = 256 for byte alphabet
-        let sa_usize: Vec<usize> = sa_is::make_suffix_array(sequence, 256);
-        let sa: Vec<u32> = sa_usize.into_iter().map(|x| x as u32).collect();
+        // Use libsais-rs for fast suffix array construction
+        // Fixes T48: sa-is crate crashes on sequences > ~2000bp
+        let sa = build_sa_integer(sequence);
 
         Self {
             sa,
@@ -282,6 +280,19 @@ mod tests {
         let sa = SuffixArray::build(&seq);
         let vals: Vec<u32> = sa.into_iter().collect();
         assert!(verify_sa(&seq, &vals), "SA for large sequence failed");
+    }
+
+    #[test]
+    fn test_large_sequence_t48() {
+        // T48: SA-IS crash on sequences > ~2000bp
+        let seq: Vec<u8> = b"ACGT".repeat(1250); // 5000bp
+        let sa = SuffixArray::build(&seq);
+        let vals: Vec<u32> = sa.into_iter().collect();
+        assert_eq!(vals.len(), 5000, "SA length should match sequence length");
+        assert!(
+            verify_sa(&seq, &vals),
+            "SA for 5000bp sequence should be valid"
+        );
     }
 
     #[test]
