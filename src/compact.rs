@@ -132,6 +132,7 @@ impl BitPackedBWT {
 
 /// Compact occurrence table using wavelet tree for O(log σ) queries.
 /// Provides bit-packed storage with efficient rank operations.
+#[derive(Clone, Debug)]
 pub struct CompactOccTable {
     wavelet: WaveletTree,
     len: usize,

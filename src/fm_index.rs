@@ -5,12 +5,13 @@ use std::io;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use crate::compact::CompactOccTable;
 use crate::error::BwaError;
 use crate::reference::Reference;
 use crate::sa::SuffixArray;
 
 const MAGIC: &[u8; 6] = b"BWAIDX";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 
 #[derive(Clone, Debug)]
 pub struct BWT {
@@ -62,111 +63,10 @@ impl BWT {
 }
 
 #[derive(Clone, Debug)]
-pub struct OccTable {
-    counts: Vec<[u32; 5]>,
-    sample_rate: usize,
-    bwt: Vec<u8>,
-}
-
-impl OccTable {
-    pub fn new(bwt: &BWT, sample_rate: usize) -> Self {
-        let mut counts = Vec::new();
-        let mut total = [0u32; 5];
-        let mut last_sample = [0u32; 5];
-        let bwt_vec = bwt.as_slice().to_vec();
-
-        for (i, &c) in bwt_vec.iter().enumerate() {
-            // Don't count sentinel (value 4) in occurrence table
-            if c < 4 {
-                total[c as usize] += 1;
-            }
-            if i % sample_rate == 0 {
-                counts.push(last_sample);
-                last_sample = total;
-            }
-        }
-
-        // Push the final sample if there were any characters processed
-        if !bwt_vec.is_empty() {
-            counts.push(total);
-        }
-
-        Self {
-            counts,
-            sample_rate,
-            bwt: bwt_vec,
-        }
-    }
-
-    pub fn occ(&self, c: u8, idx: usize) -> u32 {
-        if idx == 0 {
-            return 0;
-        }
-
-        let idx = idx.min(self.bwt.len());
-
-        let sample_idx = (idx - 1) / self.sample_rate;
-        let mut total = if sample_idx < self.counts.len() {
-            self.counts[sample_idx]
-        } else {
-            [0; 5]
-        };
-
-        let start = if sample_idx == 0 {
-            0
-        } else {
-            sample_idx * self.sample_rate + 1
-        };
-        for i in start..idx {
-            if i < self.bwt.len() && self.bwt[i] == c {
-                total[c as usize] += 1;
-            }
-        }
-
-        total[c as usize]
-    }
-
-    fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_all(&self.bwt)?;
-        let n = self.counts.len() as u32;
-        writer.write_all(&n.to_le_bytes())?;
-        for count in &self.counts {
-            for &v in count {
-                writer.write_all(&v.to_le_bytes())?;
-            }
-        }
-        Ok(())
-    }
-
-    fn read_from(reader: &mut impl Read, sample_rate: usize, bwt_len: usize) -> io::Result<Self> {
-        let mut bwt = vec![0u8; bwt_len];
-        reader.read_exact(&mut bwt)?;
-        let mut n_bytes = [0u8; 4];
-        reader.read_exact(&mut n_bytes)?;
-        let n = u32::from_le_bytes(n_bytes) as usize;
-        let mut counts = Vec::with_capacity(n);
-        for _ in 0..n {
-            let mut count = [0u32; 5];
-            for v in &mut count {
-                let mut bytes = [0u8; 4];
-                reader.read_exact(&mut bytes)?;
-                *v = u32::from_le_bytes(bytes);
-            }
-            counts.push(count);
-        }
-        Ok(Self {
-            counts,
-            sample_rate,
-            bwt,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct FMIndex {
     bwt: BWT,
     sa: SuffixArray,
-    occ: OccTable,
+    occ: CompactOccTable,
     f_column: [u32; 5],
     len: usize,
 }
@@ -178,7 +78,7 @@ impl FMIndex {
 
         let sa = SuffixArray::build(&sequence);
         let bwt = BWT::from_sa(&sequence, &sa);
-        let occ = OccTable::new(&bwt, 32);
+        let occ = CompactOccTable::from_bwt(bwt.as_slice());
 
         let mut total = [0u32; 5];
         for &c in &sequence {
@@ -238,7 +138,6 @@ impl FMIndex {
         file.write_all(MAGIC)?;
         file.write_all(&[VERSION])?;
         file.write_all(&(self.len as u32).to_le_bytes())?;
-        file.write_all(&(self.occ.sample_rate as u32).to_le_bytes())?;
 
         for &fc in &self.f_column {
             file.write_all(&fc.to_le_bytes())?;
@@ -273,10 +172,6 @@ impl FMIndex {
         file.read_exact(&mut len_bytes)?;
         let len = u32::from_le_bytes(len_bytes) as usize;
 
-        let mut rate_bytes = [0u8; 4];
-        file.read_exact(&mut rate_bytes)?;
-        let sample_rate = u32::from_le_bytes(rate_bytes) as usize;
-
         let mut f_column = [0u32; 5];
         for fc in &mut f_column {
             let mut bytes = [0u8; 4];
@@ -286,7 +181,7 @@ impl FMIndex {
 
         let bwt = BWT::read_from(&mut file, len)?;
         let sa = SuffixArray::read_from(&mut file, len)?;
-        let occ = OccTable::read_from(&mut file, sample_rate, len)?;
+        let occ = CompactOccTable::from_bwt(bwt.as_slice());
 
         Ok(Self {
             bwt,
@@ -452,24 +347,7 @@ mod tests {
         assert_eq!(bwt_slice[2], 0, "BWT[2] should be 0 (A)");
         assert_eq!(bwt_slice[3], 0, "BWT[3] should be 0 (A)");
 
-        // Debug: check the counts array
-        assert_eq!(
-            index.occ.counts.len(),
-            2,
-            "Should have 2 samples: initial and final"
-        );
-        assert_eq!(
-            index.occ.counts[0],
-            [0, 0, 0, 0, 0],
-            "First sample should be all zeros"
-        );
-        assert_eq!(
-            index.occ.counts[1],
-            [2, 1, 0, 0, 0],
-            "Second sample should be final counts"
-        );
-
-        // Check occ at intermediate positions
+        // Check occ at intermediate positions using the public API
         assert_eq!(index.occ.occ(0, 1), 0, "occ(A, 1) should be 0");
         assert_eq!(index.occ.occ(0, 2), 0, "occ(A, 2) should be 0");
         assert_eq!(index.occ.occ(0, 3), 1, "occ(A, 3) should be 1");
