@@ -15,7 +15,7 @@ pub fn chain_seeds(seeds: &[MEM], gap_penalty: f32) -> Vec<ChainedSeed> {
 
     for seed in sorted {
         let chained = ChainedSeed {
-            mem: seed.clone(),
+            mem: seed,
             score: seed.score,
             forward_score: seed.score,
             backward_score: 0.0,
@@ -29,7 +29,7 @@ pub fn chain_seeds(seeds: &[MEM], gap_penalty: f32) -> Vec<ChainedSeed> {
 
             if gap <= gap_penalty && seed.query_start >= prev.mem.query_end() {
                 let extended = ChainedSeed {
-                    mem: seed.clone(),
+                    mem: seed,
                     score: prev.score + seed.score - gap,
                     forward_score: prev.forward_score + seed.score,
                     backward_score: prev.backward_score,

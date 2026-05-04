@@ -103,6 +103,8 @@ impl OccTable {
             return 0;
         }
 
+        let idx = idx.min(self.bwt.len());
+
         let sample_idx = (idx - 1) / self.sample_rate;
         let mut total = if sample_idx < self.counts.len() {
             self.counts[sample_idx]
@@ -222,7 +224,7 @@ impl FMIndex {
 
     pub fn count(&self, pattern: &[u8]) -> usize {
         let (left, right) = self.search(pattern);
-        right - left
+        right.saturating_sub(left)
     }
 
     pub fn find_all(&self, pattern: &[u8]) -> Vec<u32> {
