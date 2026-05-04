@@ -195,7 +195,7 @@ fn char_from_op(op: CigarOp) -> char {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct MEM {
     pub query_start: usize,
     pub ref_start: usize,

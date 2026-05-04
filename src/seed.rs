@@ -30,7 +30,7 @@ pub fn filter_mems(mems: &mut Vec<MEM>) {
             .any(|u: &MEM| mem.ref_start < u.ref_end() && mem.ref_end() > u.ref_start);
 
         if !overlaps {
-            filtered.push(mem.clone());
+            filtered.push(mem);
             used.push(mem);
         }
     }

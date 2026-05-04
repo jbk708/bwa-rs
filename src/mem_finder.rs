@@ -1,45 +1,12 @@
-//! Supermaximal MEM finding using Z-array based algorithm.
+//! Supermaximal MEM finding using binary search.
 //!
-//! This implementation provides O(n) expected time MEM finding,
-//! replacing the O(n log n) recursive binary search approach.
+//! This implementation provides O(n log m) expected time MEM finding,
+//! where n is query length and m is reference length.
 
 use crate::fm_index::FMIndex;
 use crate::types::MEM;
 
 pub const DEFAULT_MIN_MEM_LEN: usize = 19;
-
-/// Compute Z-array for the given byte sequence.
-/// Z[i] = length of longest substring starting at i that matches a prefix of s.
-#[allow(dead_code)]
-fn compute_z_array(s: &[u8]) -> Vec<usize> {
-    let n = s.len();
-    if n == 0 {
-        return Vec::new();
-    }
-
-    let mut z = vec![0usize; n];
-    let mut left = 0;
-    let mut right = 0;
-
-    for i in 1..n {
-        if i <= right {
-            let k = i - left;
-            z[i] = z[k].min(right - i + 1);
-        }
-
-        while i + z[i] < n && s[z[i]] == s[i + z[i]] {
-            z[i] += 1;
-        }
-
-        if i + z[i] - 1 > right {
-            left = i;
-            right = i + z[i] - 1;
-        }
-    }
-
-    z[0] = n;
-    z
-}
 
 /// Find supermaximal MEMs using binary search.
 ///
@@ -114,7 +81,7 @@ fn filter_supermaximal(mems: Vec<MEM>) -> Vec<MEM> {
             continue;
         }
 
-        result.push(mem.clone());
+        result.push(mem);
         max_query_end = max_query_end.max(query_end);
         max_ref_end = max_ref_end.max(ref_end);
     }
@@ -122,96 +89,9 @@ fn filter_supermaximal(mems: Vec<MEM>) -> Vec<MEM> {
     result
 }
 
-/// Legacy MEM finding using backward search (for comparison/testing).
-/// This is kept for reference but the supermaximal algorithm should be used instead.
-pub fn find_mems_legacy(index: &FMIndex, query: &[u8], min_len: usize) -> Vec<MEM> {
-    let mut mems = Vec::new();
-    find_mems_recursive_impl(index, query, 0, query.len(), min_len, &mut mems);
-    mems
-}
-
-fn find_mems_recursive_impl(
-    index: &FMIndex,
-    query: &[u8],
-    start: usize,
-    end: usize,
-    min_len: usize,
-    mems: &mut Vec<MEM>,
-) {
-    if start >= end {
-        return;
-    }
-
-    let (left, right) = index.search(&query[start..end]);
-
-    if left < right {
-        let match_len = end - start;
-        let positions: Vec<_> = (left..right)
-            .filter_map(|i| index.get_position(i))
-            .collect();
-
-        if match_len >= min_len && !positions.is_empty() {
-            for &ref_start in &positions {
-                mems.push(MEM::new(start, ref_start as usize, match_len));
-            }
-        } else if start + 1 < end {
-            find_mems_recursive_impl(index, query, start + 1, end, min_len, mems);
-        }
-    } else if start + 1 < end {
-        find_mems_recursive_impl(index, query, start, end - 1, min_len, mems);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_z_array_simple() {
-        let s = b"ABABA";
-        let z = compute_z_array(s);
-        assert_eq!(z[0], 5);
-        assert_eq!(z[1], 0); // "BABA" vs "ABABA" - no match
-        assert_eq!(z[2], 3); // "ABA" matches prefix "ABA"
-        assert_eq!(z[3], 0); // "BA" vs "AB..." - no match
-        assert_eq!(z[4], 1); // "A" matches prefix "A"
-    }
-
-    #[test]
-    fn test_z_array_no_match() {
-        let s = b"ABCDE";
-        let z = compute_z_array(s);
-        assert_eq!(z[0], 5);
-        assert_eq!(z[1], 0);
-        assert_eq!(z[2], 0);
-        assert_eq!(z[3], 0);
-        assert_eq!(z[4], 0);
-    }
-
-    #[test]
-    fn test_z_array_all_same() {
-        let s = b"AAAAA";
-        let z = compute_z_array(s);
-        assert_eq!(z[0], 5);
-        assert_eq!(z[1], 4);
-        assert_eq!(z[2], 3);
-        assert_eq!(z[3], 2);
-        assert_eq!(z[4], 1);
-    }
-
-    #[test]
-    fn test_z_array_empty() {
-        let s: &[u8] = &[];
-        let z = compute_z_array(s);
-        assert!(z.is_empty());
-    }
-
-    #[test]
-    fn test_z_array_single() {
-        let s = b"A";
-        let z = compute_z_array(s);
-        assert_eq!(z[0], 1);
-    }
 
     #[test]
     fn test_supermaximal_basic() {
@@ -266,32 +146,6 @@ mod tests {
             mems.is_empty(),
             "Should not find MEMs with min_len > query length"
         );
-    }
-
-    #[test]
-    fn test_supermaximal_matches_legacy() {
-        use crate::fm_index::FMIndex;
-        use crate::reference::Reference;
-
-        let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
-        let index = FMIndex::build(&ref_seq);
-
-        // ACGTACGT in 2-bit encoding
-        let query = [0u8, 1, 2, 3, 0, 1, 2, 3];
-        let super_mems = find_supermaximal_mems(&index, &query, 2);
-        let legacy_mems = find_mems_legacy(&index, &query, 2);
-
-        // Both should find the same maximal MEM lengths
-        let super_max_lens: Vec<_> = super_mems.iter().map(|m| m.length).collect();
-        let legacy_max_lens: Vec<_> = legacy_mems.iter().map(|m| m.length).collect();
-
-        super_max_lens.iter().max().map(|&l| {
-            assert!(
-                legacy_max_lens.contains(&l),
-                "Supermaximal should find max len {} found by legacy",
-                l
-            )
-        });
     }
 
     #[test]
