@@ -10,8 +10,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 |--------|-------|
 | ✅ Done | 38 |
 | 🔄 In Progress | 1 |
-| ⬜ Pending | 0 |
-| **Total** | **39** |
+| ⬜ Pending | 1 |
+| **Total** | **40** |
 
 ---
 
@@ -53,9 +53,41 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 **Known Issues:**
 1. **SA-IS scaling bug:** `sa-is` crate panics on large sequences with "index out of bounds: the len is 256 but the index is NNNN"
-2. **min_seed_len default:** CLI defaults to 19, too high for small test references; use `-k 10`
+2. **min_seed_len default:** CLI defaults to 10 (updated from 19)
 
 **Note:** Running on x86 compute node with AVX2/AVX-512 support.
+
+---
+
+### T48: Investigate and fix SA-IS crash on large sequences ⬜
+
+**Description:** The `sa-is` crate panics when building suffix arrays for sequences larger than ~2000bp.
+
+**Error:**
+```
+thread 'main' panicked at sa-is-0.1.0/src/lib.rs:342:16:
+index out of bounds: the len is 256 but the index is NNNN
+```
+
+**Reproducer:**
+```rust
+let ref = Reference::parse_fasta(">test\nACGT...
+"); // ~5000bp
+let index = FMIndex::build(&ref); // crashes
+```
+
+**Deliverables:**
+- [ ] Identify root cause (alphabet size handling? buffer overflow?)
+- [ ] Fix sa-is integration or switch to alternative SA construction
+- [ ] Verify with E. coli genome (~4.7MB)
+- [ ] Add regression test for large sequences
+
+**Dependencies:** None
+
+**Potential solutions:**
+1. Fix sa-is crate configuration (alphabet size parameter)
+2. Use alternative SA construction library (sais, sais-lite, libsais)
+3. Implement fallback to O(n²) construction for small inputs
 
 ---
 

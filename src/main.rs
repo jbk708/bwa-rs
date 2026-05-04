@@ -48,8 +48,8 @@ struct MemArgs {
     #[arg(short = 'o', default_value = "-")]
     pub output: PathBuf,
 
-    /// Minimum seed length (default: 19)
-    #[arg(short = 'k', default_value = "19")]
+    /// Minimum seed length (default: 10)
+    #[arg(short = 'k', default_value = "10")]
     pub min_seed_len: u32,
 
     /// Number of threads (default: auto-detect)
