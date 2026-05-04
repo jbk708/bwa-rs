@@ -23,10 +23,13 @@ cargo build --release
 
 | Size | bwa (C) | bwa-rs (Rust) | Ratio |
 |------|---------|---------------|-------|
-| 5KB | 3ms | 259ms | 86x |
-| 50KB | 8ms | 255ms | 32x |
-| 500KB | 50ms | 280ms | 5.6x |
-| **5MB** | **494ms** | **470ms** | **1.0x** ✓ |
+| 5KB | 3ms | 259ms | 0.01x |
+| 50KB | 8ms | 255ms | 0.03x |
+| 500KB | 50ms | 280ms | 0.18x |
+| 5MB | 494ms | 470ms | 1.05x |
+| **248MB (chr1)** | **236s** | **33s** | **7.0x** ✓ |
+
+**Note:** bwa-rs overhead dominates small sequences. At real genome sizes, bwa-rs **outperforms bwa** due to optimized libsais algorithm. Both tools use multithreading internally (libsais/OpenMP).
 
 **Note:** bwa-rs overhead dominates for small sequences. At E. coli scale (~5MB), performance matches bwa.
 
