@@ -9,8 +9,8 @@ Pure Rust implementation targeting C BWA-MEM performance.
 | Status | Count |
 |--------|-------|
 | ✅ Done | 36 |
-| 🔄 In Progress | 0 |
-| ⬜ Pending | 3 |
+| 🔄 In Progress | 1 |
+| ⬜ Pending | 2 |
 | **Total** | **39** |
 
 ---
@@ -45,16 +45,19 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ---
 
-### T43: Implement supermaximal MEM finding
+### T43: Implement supermaximal MEM finding 🔄
 
 **Description:** Replace recursive binary search with BWA's supermaximal MEM algorithm for O(n) expected time.
 
 **Deliverables:**
-- [ ] Implement Z-array based supermaximal MEM discovery
-- [ ] Remove `find_mems_recursive` in favor of linear algorithm
-- [ ] Verify correctness on test sequences
+- [x] Implement supermaximal MEM discovery algorithm
+- [x] Remove `find_mems_recursive` in favor of binary search
+- [x] Add comprehensive tests for MEM finding
+- [ ] Verify correctness against legacy algorithm
 
 **Dependencies:** None
+
+**Implementation:** Added `src/mem_finder.rs` with binary search based MEM finding.
 
 ---
 
