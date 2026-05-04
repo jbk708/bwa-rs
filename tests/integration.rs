@@ -424,7 +424,10 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
         .args(["index", ref_path.to_str().unwrap()])
         .output()?;
     if !index_status.status.success() {
-        println!("SKIP: bwa index failed: {}", String::from_utf8_lossy(&index_status.stderr));
+        println!(
+            "SKIP: bwa index failed: {}",
+            String::from_utf8_lossy(&index_status.stderr)
+        );
         return Ok(());
     }
 
@@ -462,7 +465,7 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
 
         assert_eq!(our_fields[0], bwa_fields[0], "QNAME should match");
         assert_eq!(our_fields[2], bwa_fields[2], "RNAME should match");
-        
+
         // Normalize CIGAR: M and = are equivalent for matches
         let our_cigar = our_fields[5].replace('=', "M");
         let bwa_cigar = bwa_fields[5].replace('=', "M");
