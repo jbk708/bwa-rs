@@ -9,6 +9,35 @@ pub struct WaveletTree {
     wm: WaveletMatrix,
     len: usize,
     is_padded: bool,
+    #[allow(dead_code)]
+    original_data: Vec<u8>,
+}
+
+impl Clone for WaveletTree {
+    fn clone(&self) -> Self {
+        Self {
+            wm: WaveletMatrix::new(
+                &self
+                    .original_data
+                    .iter()
+                    .map(|&c| c as u64)
+                    .collect::<Vec<_>>(),
+            ),
+            len: self.len,
+            is_padded: self.is_padded,
+            original_data: self.original_data.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for WaveletTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WaveletTree")
+            .field("len", &self.len)
+            .field("is_padded", &self.is_padded)
+            .field("original_data_len", &self.original_data.len())
+            .finish()
+    }
 }
 
 impl WaveletTree {
@@ -19,6 +48,7 @@ impl WaveletTree {
                 wm: WaveletMatrix::new(&vec![0, 1]),
                 len: 0,
                 is_padded: false,
+                original_data: Vec::new(),
             };
         }
 
@@ -31,6 +61,7 @@ impl WaveletTree {
                 wm: WaveletMatrix::new(&vec![data[0], sentinel]),
                 len: n,
                 is_padded: true,
+                original_data: bwt.to_vec(),
             };
         }
 
@@ -43,6 +74,7 @@ impl WaveletTree {
                 wm: WaveletMatrix::new(&padded),
                 len: n,
                 is_padded: true,
+                original_data: bwt.to_vec(),
             };
         }
 
@@ -51,6 +83,7 @@ impl WaveletTree {
             wm,
             len: n,
             is_padded: false,
+            original_data: bwt.to_vec(),
         }
     }
 

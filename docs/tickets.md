@@ -1,6 +1,6 @@
 # BWA-MEM Performance Optimization
 
-**Project Status: ✅ Complete**
+**Project Status: 🔄 In Progress**
 
 Pure Rust implementation targeting C BWA-MEM performance.
 
@@ -8,9 +8,9 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 36 |
-| 🔄 In Progress | 1 |
-| ⬜ Pending | 2 |
+| ✅ Done | 38 |
+| 🔄 In Progress | 0 |
+| ⬜ Pending | 1 |
 | **Total** | **39** |
 
 ---
@@ -45,7 +45,7 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 ---
 
-### T43: Implement supermaximal MEM finding 🔄
+### T43: Implement supermaximal MEM finding ✅
 
 **Description:** Replace recursive binary search with BWA's supermaximal MEM algorithm for O(n) expected time.
 
@@ -53,24 +53,29 @@ Pure Rust implementation targeting C BWA-MEM performance.
 - [x] Implement supermaximal MEM discovery algorithm
 - [x] Remove `find_mems_recursive` in favor of binary search
 - [x] Add comprehensive tests for MEM finding
+- [x] Integrate `find_supermaximal_mems` into `Aligner` pipeline
 - [ ] Verify correctness against legacy algorithm
 
 **Dependencies:** None
 
-**Implementation:** Added `src/mem_finder.rs` with binary search based MEM finding.
+**Implementation:** Added `src/mem_finder.rs` with binary search based MEM finding. The `find_mems()` function in `src/seed.rs` delegates to `find_supermaximal_mems()`.
 
 ---
 
-### T44: Integrate wavelet tree for O(1) occ queries
+### T44: Integrate wavelet tree for O(log σ) occ queries
 
-**Description:** Replace sampling-based OccTable with wavelet tree for guaranteed constant-time queries.
+**Description:** Replace sampling-based OccTable with wavelet tree for guaranteed O(log σ) queries.
 
 **Deliverables:**
-- [ ] Integrate `src/occ/wavelet_tree.rs` into FM-Index
-- [ ] Remove sampling-based occ table
+- [x] Implement wavelet tree occurrence table in `src/occ/wavelet_tree.rs`
+- [x] Add `CompactOccTable` in `src/compact.rs` using wavelet tree
+- [x] Integrate wavelet tree into main `FMIndex` (see T46)
+- [ ] Remove or deprecate sampling-based `OccTable`
 - [ ] Benchmark improvement on large genomes
 
 **Dependencies:** T42
+
+**Note:** T46 handles the FM-Index integration work.
 
 ---
 
@@ -84,6 +89,26 @@ Pure Rust implementation targeting C BWA-MEM performance.
 - [ ] Tune `optimal_bandwidth()` based on empirical results
 
 **Dependencies:** T42, T43, T44
+
+---
+
+### T46: Integrate wavelet tree into FMIndex ✅
+
+**Description:** Replace the sampling-based `OccTable` in `src/fm_index.rs` with `CompactOccTable` that uses wavelet tree for O(log σ) occ queries.
+
+**Deliverables:**
+- [x] Replace `OccTable` with `CompactOccTable` in `FMIndex` struct
+- [x] Update `FMIndex::build()` to use `CompactOccTable::from_bwt()`
+- [x] Update serialization (`save`/`load`) to be compatible with wavelet tree
+- [x] Ensure all existing tests pass
+- [ ] Add benchmark comparing sampling vs wavelet tree occ queries
+
+**Dependencies:** T44
+
+**Implementation:**
+- `src/occ/wavelet_tree.rs` - added `Clone` and `Debug` implementations with `original_data` field
+- `src/compact.rs` - `CompactOccTable` derives `Clone` and `Debug`
+- `src/fm_index.rs` - uses `CompactOccTable` instead of `OccTable`, updated to version 3
 
 ---
 
@@ -121,9 +146,9 @@ cargo test
 |-------|-----------|------------|-----------|
 | Index Build | SA-IS | O(n) | O(n) |
 | FM-Index Search | Backward search | O(m) | O(m) |
-| MEM Finding | Current: O(n log n) | O(n log n) | O(n) |
+| MEM Finding | Supermaximal | O(n log m) | O(n) |
 | Chaining | Greedy DP | O(k log k) | O(k log k) |
 | Alignment | Banded SW | O(m × w) | O(m × w) |
-| Occ Queries | Sampling | O(w) avg | O(1) |
+| Occ Queries | Wavelet Tree | O(log σ) | O(1) |
 
 **Goal:** Achieve O(n) MEM finding and O(1) occ queries for full parity.
