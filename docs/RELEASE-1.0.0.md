@@ -10,8 +10,7 @@
 - [x] README.md - Complete with features, installation, usage
 - [x] docs/testing.md - Testing guide
 - [x] docs/PERFORMANCE.md - Benchmark results
-- [x] docs/tickets.md - Project tracking
-- [x] docs/tickets-archive-complete.md - Archived completed tickets
+- [x] CHANGELOG.md - Release notes
 - [x] Cargo.toml - Complete metadata
 
 ### Code Quality
@@ -48,7 +47,7 @@
 
 ### Version & Metadata
 - [ ] Update `Cargo.toml` version from `0.1.0` to `1.0.0`
-- [ ] Update repository URL from `USER/bwa-mem` to actual repo
+- [x] Update repository URL from `USER/bwa-mem` to actual repo
 - [ ] Update rust-version if needed (currently 1.89)
 
 ### API Stability
@@ -71,7 +70,7 @@
 - [ ] Add usage examples to README
 - [ ] Document CLI options completely
 - [ ] Add API documentation with `cargo doc`
-- [ ] Review CHANGELOG.md (create if missing)
+- [x] CHANGELOG.md - Created with release notes
 
 ### Security
 - [ ] Review unsafe code blocks

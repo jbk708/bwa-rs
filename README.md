@@ -98,7 +98,6 @@ BWA_PATH=bwa cargo test test_compare_against_bwa_mem
 
 - [docs/testing.md](docs/testing.md) - Testing guide
 - [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - Benchmark results
-- [docs/tickets.md](docs/tickets.md) - Project tracking (48 tickets complete)
 - [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md) - Release checklist
 
 ## Benchmarks
