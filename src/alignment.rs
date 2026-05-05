@@ -435,8 +435,8 @@ pub fn extend_seed_backward(
     }
 
     let mut cigar = Cigar::new();
-    let mut last_op = CigarOp::M;
-    let mut last_len = best_j as u32;
+    let mut last_op = CigarOp::Eq; // Start assuming match
+    let mut last_len = 0u32;
 
     if best_j > 0 {
         let ref_start = seed_end.saturating_sub(best_j);
@@ -470,7 +470,7 @@ pub fn extend_seed_backward(
     }
 
     if cigar.ops.is_empty() {
-        cigar.push(CigarOp::M, 0);
+        cigar.push(CigarOp::Eq, 0);
     }
 
     SeedExtension {
@@ -609,13 +609,17 @@ pub fn affine_extend_forward(
     let mut best_i = 0;
     let mut best_j = 0;
 
+    // Search all computed cells for the best score
     for i in 1..=query_len {
-        let j = (actual_ref_len.min(i.saturating_add(bw))).min(actual_ref_len);
-        let score = dp.m_at(i, j).max(dp.x_at(i, j)).max(dp.g_at(i, j));
-        if score > best_score {
-            best_score = score;
-            best_i = i;
-            best_j = j;
+        let j_start = 1.max(i.saturating_sub(bw));
+        let j_end = (i + bw).min(actual_ref_len).min(actual_ref_len);
+        for j in j_start..=j_end {
+            let score = dp.m_at(i, j).max(dp.x_at(i, j)).max(dp.g_at(i, j));
+            if score > best_score {
+                best_score = score;
+                best_i = i;
+                best_j = j;
+            }
         }
     }
 
@@ -667,14 +671,14 @@ fn traceback_affine(
         }
     }
 
+    // Only add trailing deletions for remaining query (not insertions)
+    // Insertions (I) consume query characters, so if i == 0 we can't add more I
     while i > 0 {
         ops.push(CigarOp::D);
         i -= 1;
     }
-    while j > 0 {
-        ops.push(CigarOp::I);
-        j -= 1;
-    }
+    // Note: trailing reference without more query doesn't add I ops
+    // because I consumes query chars (decrements i), not reference
 
     ops.reverse();
     Cigar::compress(ops)
