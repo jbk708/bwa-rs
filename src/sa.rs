@@ -66,6 +66,12 @@ impl SuffixArray {
         }
     }
 
+    /// Create a new SuffixArray with pre-computed SA values and explicit length
+    /// Used by FM-index which needs n+1 entries including sentinel
+    pub fn with_len(sa: Vec<u32>, len: usize) -> Self {
+        Self { sa, len }
+    }
+
     pub fn get(&self, idx: usize) -> Option<u32> {
         self.sa.get(idx).copied()
     }
