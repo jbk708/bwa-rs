@@ -1,5 +1,8 @@
 # bwa-rs
 
+[![CI](https://github.com/jbk708/bwa-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/jbk708/bwa-rs/actions)
+[![version](https://img.shields.io/badge/version-0.1.0-blue.svg)](Cargo.toml)
+
 **Pure Rust implementation of BWA-MEM** for genomic alignment with paired-end support.
 
 ## Features
@@ -42,6 +45,8 @@ bwa-rs mem -r reference.fa -1 reads_1.fq -2 reads_2.fq -o output.sam
 | `-t` | Thread count | auto |
 | `-o` | Output file | stdout |
 
+> **Tip:** Use `-k 10` for small references (<10KB). BWA-MEM uses 19 for large genomes.
+
 ## Architecture
 
 ```
@@ -51,19 +56,26 @@ src/
 ├── error.rs            # Error types
 ├── types.rs            # Core types
 ├── reference.rs        # FASTA parsing, 2-bit encoding
-├── fm_index.rs         # FM-Index, BWT, suffix array
-├── fastq.rs            # FASTQ streaming
-├── seed.rs             # MEM finding
-├── alignment.rs        # Smith-Waterman, affine gaps
+├── sa.rs               # Suffix array construction
+├── fm_index.rs         # FM-Index, BWT
+├── mmap_index.rs       # Memory-mapped FM-Index
+├── compact.rs          # Compact bit-packed structures
+├── occ/                # Occurrence table
+│   ├── mod.rs
+│   └── wavelet_tree.rs # Wavelet tree for O(log σ) queries
+├── mem_finder.rs       # Supermaximal MEM finding
+├── seed.rs             # MEM discovery
 ├── chaining.rs         # Seed chaining
+├── alignment.rs        # Smith-Waterman, affine gaps
+├── simd_sw.rs          # SIMD Smith-Waterman (AVX2/AVX-512)
+├── simd_affine.rs      # SIMD affine alignment
+├── parallel.rs         # Multi-threaded alignment
+├── parallel_seed.rs    # Chunked parallel seeding
 ├── sam.rs              # SAM records
 ├── bam.rs              # BAM output
 ├── paired.rs           # Pairing, rescue
-├── parallel.rs         # Multi-threaded alignment
-├── parallel_seed.rs    # Chunked parallel seeding
-├── simd_sw.rs          # SIMD Smith-Waterman
-├── simd_affine.rs      # SIMD affine alignment
-└── mmap_index.rs       # Memory-mapped FM-Index
+├── fastq.rs            # FASTQ streaming
+└── utils.rs            # Utilities
 ```
 
 ## Testing
@@ -85,8 +97,19 @@ BWA_PATH=bwa cargo test test_compare_against_bwa_mem
 ## Documentation
 
 - [docs/testing.md](docs/testing.md) - Testing guide
-- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - Optimization results
-- [docs/tickets.md](docs/tickets.md) - Project tracking
+- [docs/PERFORMANCE.md](docs/PERFORMANCE.md) - Benchmark results
+- [docs/tickets.md](docs/tickets.md) - Project tracking (48 tickets complete)
+- [docs/RELEASE-1.0.0.md](docs/RELEASE-1.0.0.md) - Release checklist
+
+## Benchmarks
+
+Run performance benchmarks:
+
+```bash
+cargo bench
+```
+
+See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for detailed results.
 
 ## License
 
