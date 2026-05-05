@@ -234,7 +234,7 @@ fn test_debug_search_trace() {
     let index = FMIndex::build(&reference);
 
     let pattern = seq_to_bytes("GGGG");
-    let n = pattern.len();
+    let _n = pattern.len();
 
     eprintln!("Pattern: {:?}", pattern);
     eprintln!("F-column: {:?}", index.f_column);
