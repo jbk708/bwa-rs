@@ -1,7 +1,7 @@
 # bwa-rs
 
 [![CI](https://github.com/jbk708/bwa-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/jbk708/bwa-rs/actions)
-[![version](https://img.shields.io/badge/version-0.1.0-blue.svg)](Cargo.toml)
+[![version](https://img.shields.io/badge/version-1.0.0-blue.svg)](Cargo.toml)
 
 **Pure Rust implementation of BWA-MEM** for genomic alignment with paired-end support.
 
