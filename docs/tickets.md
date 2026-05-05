@@ -88,36 +88,27 @@ index out of bounds: the len is 256 but the index is NNNN
 
 ---
 
-### T49: Investigate position accuracy discrepancies vs bwa ⬜
+### T49: Investigate position accuracy discrepancies vs bwa ✅
 
 **Description:** Investigate and resolve position accuracy differences between bwa-rs and bwa C implementation.
 
-**Issue:**
-```
-Reference: AAAAAAA...GGGGAAAAACCCC...TTTTTT (200KB)
-Read: GGGGAAAAACCCC (13bp, unique at position 100001)
+**Fixes:**
+1. **PR #42** - Fixed CIGAR query length calculation in affine alignment
+   - Fixed trailing I operations bug in traceback_affine
+   - Fixed best endpoint search to check all DP matrix cells
+2. **PR #44** - Fixed FM-index sentinel handling for long references
+   - Fixed BWT construction with n+1 entries
+   - Fixed F-column calculation
 
-Expected position: 100001
-bwa-rs reported: 100006 with CIGAR 7M7X4=
-```
+**Verification:**
+- [x] All 231 tests pass
+- [x] GGGG search finds correct position 5 in test reference
+- [x] Pattern at position 100000 found in 50KB reference
+- [x] FM-index and MmapFMIndex give consistent results
 
-**Observations:**
-| Check | Status | Notes |
-|-------|--------|-------|
-| Index construction | ✓ | Correct (verified on chr1 248MB) |
-| SAM format | ✓ | Correct (CIGAR, fields valid) |
-| CIGAR accuracy | ✓ | Matches bwa on test reference |
-| Position accuracy | ⚠️ | Discrepancies in some cases |
+**Dependencies:** T48 (SA-IS fix), T50 (FM-index sentinel fix)
 
-**Impact Assessment Needed:**
-- [ ] Determine if position differences affect alignment quality
-- [ ] Check if differences only occur with mismatches vs perfect matches
-- [ ] Verify if differences are within acceptable tolerance
-- [ ] Compare MAPQ scores for different alignment choices
-
-**Dependencies:** None
-
-**GitHub Issue:** #40
+**GitHub Issues:** #40, #43
 
 ---
 

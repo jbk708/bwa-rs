@@ -38,7 +38,7 @@ fn test_large_reference_search() {
 
     // Build FM-index
     let index = FMIndex::build(&reference);
-    assert_eq!(index.len, ref_len + 1);  // n+1 with sentinel
+    assert_eq!(index.len, ref_len + 1); // n+1 with sentinel
 
     // Verify pattern exists in reference at position 100000
     let ref_slice = reference.as_slice();
@@ -59,7 +59,12 @@ fn test_large_reference_search() {
     println!("Found positions: {:?}", positions);
 
     // The search should return a valid range
-    assert!(left < right, "Search should find matches: ({}, {})", left, right);
+    assert!(
+        left < right,
+        "Search should find matches: ({}, {})",
+        left,
+        right
+    );
 
     // Should find positions
     assert!(
@@ -87,7 +92,10 @@ fn test_simple_vs_large_consistency() {
     let simple_positions = simple_index.find_all(&seq_to_bytes(simple_pattern));
 
     println!("Simple ref positions: {:?}", simple_positions);
-    assert!(!simple_positions.is_empty(), "Simple reference should find pattern");
+    assert!(
+        !simple_positions.is_empty(),
+        "Simple reference should find pattern"
+    );
 
     // Now test large reference
     let mut large_ref_bytes = Vec::new();
@@ -102,7 +110,10 @@ fn test_simple_vs_large_consistency() {
     let large_positions = large_index.find_all(&seq_to_bytes(simple_pattern));
 
     println!("Large ref positions: {:?}", large_positions);
-    assert!(!large_positions.is_empty(), "Large reference should also find pattern");
+    assert!(
+        !large_positions.is_empty(),
+        "Large reference should also find pattern"
+    );
 }
 
 #[test]
@@ -126,7 +137,10 @@ fn test_ggg_pattern_large_ref() {
     let (left, right) = index.search(&seq_to_bytes("GGGG"));
     let positions = index.find_all(&seq_to_bytes("GGGG"));
 
-    println!("GGGG search: range = ({}, {}), positions = {:?}", left, right, positions);
+    println!(
+        "GGGG search: range = ({}, {}), positions = {:?}",
+        left, right, positions
+    );
 
     assert!(!positions.is_empty(), "Should find GGGG in large reference");
 
@@ -206,10 +220,7 @@ fn test_large_ref_debug() {
     // Verify pattern in reference
     let ref_slice = reference.as_slice();
     let pattern_at_10000 = &ref_slice[10000..10013];
-    eprintln!(
-        "Pattern at position 10000: {:?}",
-        pattern_at_10000
-    );
+    eprintln!("Pattern at position 10000: {:?}", pattern_at_10000);
     eprintln!("Expected pattern: {:?}", pattern_bytes);
 
     // Search step by step

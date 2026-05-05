@@ -80,15 +80,15 @@ impl MmapFMIndex {
     pub fn build_and_save(reference: &Reference, path: &Path) -> Result<Self, BwaError> {
         let sequence = reference.as_slice();
         let n = sequence.len();
-        let len = n + 1;  // Include sentinel in length
+        let len = n + 1; // Include sentinel in length
 
         // Build suffix array with n+1 entries (including sentinel)
         let mut padded = Vec::with_capacity(len);
         padded.extend_from_slice(&sequence);
-        padded.push(4);  // Sentinel character at position n
+        padded.push(4); // Sentinel character at position n
 
         let sa = SuffixArray::build(&padded);
-        
+
         // Build BWT with n+1 entries
         let mut bwt = Vec::with_capacity(len);
         for &pos in &sa.sa {
@@ -106,7 +106,7 @@ impl MmapFMIndex {
         for c in &sequence {
             total[*c as usize] += 1;
         }
-        total[4] = 1;  // Add sentinel count
+        total[4] = 1; // Add sentinel count
 
         let mut f_column = [0u32; 5];
         f_column[0] = 1;
@@ -252,7 +252,7 @@ mod tests {
         let temp_path = std::env::temp_dir().join("test_mmap_index.idx");
 
         let index = MmapFMIndex::build_and_save(&reference, &temp_path).unwrap();
-        assert_eq!(index.len(), 9);  // n+1 with sentinel
+        assert_eq!(index.len(), 9); // n+1 with sentinel
 
         std::fs::remove_file(temp_path).ok();
     }
@@ -284,7 +284,7 @@ mod tests {
         MmapFMIndex::build_and_save(&reference, &temp_path).unwrap();
         let index = MmapFMIndex::open(&temp_path).unwrap();
 
-        assert_eq!(index.len(), 40001);  // n+1 with sentinel
+        assert_eq!(index.len(), 40001); // n+1 with sentinel
 
         let pattern = [0, 1, 2]; // ACG
         let count = index.count(&pattern);
@@ -332,7 +332,7 @@ ACGTACGT",
         let (mmap_l, mmap_r) = index.search(&[3]); // T
         let mmap_pos = index.find_all(&[3]);
 
-        assert_eq!(index.len(), 9);  // n+1 with sentinel
+        assert_eq!(index.len(), 9); // n+1 with sentinel
         assert_eq!((fm_l, fm_r), (mmap_l, mmap_r), "Search ranges should match");
         assert_eq!(fm_pos, mmap_pos, "Positions should match");
         assert!(!fm_pos.is_empty(), "Should find T in ACGTACGT");
@@ -370,4 +370,3 @@ ACGTACGT",
         std::fs::remove_file(temp_path).ok();
     }
 }
-
