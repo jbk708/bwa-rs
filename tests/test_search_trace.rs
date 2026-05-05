@@ -94,7 +94,7 @@ fn test_search_trace_gggg() {
 
     // Verify by checking actual locations in reference
     eprintln!("\n=== Verification ===");
-    for (i, c) in ref_seq.char_indices() {
+    for (i, _c) in ref_seq.char_indices() {
         let chars: String = ref_seq.chars().skip(i).take(4).collect();
         if chars == pattern {
             eprintln!("Pattern '{}' found at position {} in reference", pattern, i);

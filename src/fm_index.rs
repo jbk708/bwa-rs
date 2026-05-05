@@ -23,7 +23,7 @@ impl BWT {
     /// Build BWT from SA with n+1 entries (including sentinel suffix)
     pub fn from_sa_with_sentinel(sequence: &[u8], sa: &SuffixArray) -> Self {
         let len = sa.len(); // n+1
-        let n = sequence.len();
+        let _n = sequence.len();
         let mut bwt = Vec::with_capacity(len);
 
         for &pos in &sa.sa {
