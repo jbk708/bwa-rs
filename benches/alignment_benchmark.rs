@@ -2,7 +2,7 @@
 //!
 //! Run with: cargo bench
 
-use bwa_mem::{alignment::optimal_bandwidth, Alignment, Aligner, FMIndex, Reference};
+use bwa_mem::{alignment::optimal_bandwidth, Aligner, Alignment, FMIndex, Reference};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 fn create_test_aligner(size: usize) -> (Aligner, Vec<u8>) {
@@ -43,9 +43,7 @@ fn alignment_benchmark(c: &mut Criterion) {
         let read = vec![0u8, 1, 2, 3].repeat(size / 4);
 
         group.bench_function(format!("align_{}", size), |b| {
-            b.iter(|| {
-                black_box(aligner.align_read(&read, None))
-            });
+            b.iter(|| black_box(aligner.align_read(&read, None)));
         });
     }
 

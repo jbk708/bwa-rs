@@ -51,7 +51,10 @@ fn occ_query_benchmark(c: &mut Criterion) {
 }
 
 fn naive_occ_query(seq: &[u8], c: u8, idx: usize) -> usize {
-    seq[..idx.min(seq.len())].iter().filter(|&&x| x == c).count()
+    seq[..idx.min(seq.len())]
+        .iter()
+        .filter(|&&x| x == c)
+        .count()
 }
 
 fn occ_query_comparison(c: &mut Criterion) {
