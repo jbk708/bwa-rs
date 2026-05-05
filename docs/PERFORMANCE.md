@@ -53,6 +53,23 @@ cargo build --release
 | Peak memory | - | - | - |
 | Alignment accuracy | ✓ | ✓ | CIGAR matches (M/= normalized) |
 
+### Alignment Parameters
+
+| Parameter | bwa-rs Default | bwa-mem Default | Notes |
+|-----------|---------------|-----------------|-------|
+| match_score | 1 | 1 | Match bonus |
+| mismatch_penalty | 4 | 4 | Mismatch penalty |
+| gap_open | 6 | 5 | Gap opening penalty |
+| gap_extend | 1 | 1 | Gap extension penalty |
+| bandwidth | 16 + len/2 (max 256) | ~dynamic | Banded DP width |
+| min_seed_len | 19 | 19 | Minimum MEM seed length |
+
+**Bandwidth Formula:** `optimal_bandwidth(query_len) = min(256, 16 + query_len / 2)`
+
+This formula balances accuracy with performance:
+- Short reads (<500bp): bandwidth ~26-266
+- Long reads (>500bp): bandwidth capped at 256
+
 ---
 
 ## System Info
@@ -138,7 +155,8 @@ bwa mem ref.fa reads.fq > c.sam
 
 ## Notes
 
-- **SA-IS bug:** Need to investigate sa-is crate for large alphabet handling
 - **CIGAR normalization:** bwa uses `M` while bwa-rs uses `=` for matches
-- **min_seed_len:** Critical parameter for alignment sensitivity
+- **min_seed_len:** Critical parameter for alignment sensitivity (use `-k 10` for small genomes)
 - **Memory mapping:** bwa-rs uses mmap for large genomes
+- **SIMD alignment:** AVX2/AVX-512 vectorization for Smith-Waterman (fallback on ARM)
+- **Benchmarks:** Run `cargo bench` for detailed alignment performance metrics
