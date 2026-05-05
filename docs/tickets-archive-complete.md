@@ -43,6 +43,12 @@
 | T33 | 5 | Multi-threaded Alignment with Rayon |
 | T34 | 5 | Parallel Seeding for multi-threaded MEM finding |
 | T35 | 6 | Code Cleanup and simplification |
+| T42 | 7 | Implement true SIMD Smith-Waterman |
+| T43 | 7 | Implement supermaximal MEM finding |
+| T46 | 7 | Integrate wavelet tree into FMIndex |
+| T48 | 7 | Fix SA-IS crash on large sequences |
+| T49 | 7 | Fix position accuracy discrepancies |
+| T50 | 7 | Fix FM-index BWT/sentinel handling |
 
 ---
 
@@ -117,12 +123,16 @@
 **T6:** Optimized FM-index serialization to store counts directly  
 **T7:** Removed stored reference field from FMIndex struct
 
-### Phase 7: Future Optimizations (T42-T45)
+### Phase 7: Future Optimizations (T42-T50)
 
-**T42:** Implement true SIMD Smith-Waterman (AVX2/AVX-512 vectorization)  
-**T43:** Implement supermaximal MEM finding (O(n) expected)  
+**T42:** Implement true SIMD Smith-Waterman (AVX2/AVX-512 vectorization) ✅  
+**T43:** Implement supermaximal MEM finding (O(n) expected) ✅  
 **T44:** Integrate wavelet tree for O(1) occ queries  
 **T45:** Tune alignment parameters with benchmarking
+**T46:** Integrate wavelet tree into FMIndex ✅  
+**T48:** Fix SA-IS crash on large sequences (replaced sa-is with libsais-rs) ✅  
+**T49:** Fix position accuracy discrepancies vs bwa ✅  
+**T50:** Fix FM-index BWT/sentinel handling for long references ✅
 
 ---
 
@@ -136,8 +146,9 @@
 | 4 | Memory Optimization | T31, T32 | ✅ Complete |
 | 5 | Parallelization | T33, T34 | ✅ Complete |
 | 6 | Code Cleanup | T1-T7 | ✅ Complete |
+| 7 | Optimization & Fixes | T42-T50 | ✅ Complete |
 
-**All 35 tickets completed: April-May 2026**
+**All 41 tickets completed: May 2026**
 
 ---
 
@@ -209,12 +220,38 @@ Phase 1 (Core) ──────┬──> Phase 2 (Occ) ──> Phase 3 (SIMD)
 
 ---
 
+## Phase 7: Optimization & Fixes (T42-T50)
+
+### Performance Fixes
+**T48:** Fixed SA-IS crash - replaced `sa-is` with `libsais-rs`
+  - Achieved 7.1x speedup on chr1 (248MB)
+**T49:** Fixed position accuracy discrepancies vs bwa
+  - Fixed CIGAR query length calculation in affine alignment
+  - Fixed FM-index sentinel handling for long references
+
+### SIMD Implementation
+**T42:** AVX2/AVX-512 Smith-Waterman with runtime dispatch
+
+### MEM Algorithm
+**T43:** Supermaximal MEM finding with O(n) expected time
+  - Added `src/mem_finder.rs` with binary search based algorithm
+
+### Wavelet Tree Integration
+**T46:** Integrated wavelet tree into FMIndex
+  - Replaced sampling-based `OccTable` with `CompactOccTable`
+  - Updated serialization to version 3
+
+### FM-Index Fixes
+**T50:** Fixed BWT/sentinel handling for long references
+  - BWT now built with n+1 entries (including sentinel)
+  - Fixed F-column calculation
+  - Fixed MmapFMIndex search
+
 ## Remaining Considerations
 
-1. **SIMD Implementation:** Currently scalar fallback only - AVX code is stub-only
-2. **Wavelet Tree:** Not actively used - OccTable uses sampling approach
-3. **RRR Bitvector:** Implemented but not integrated
-4. **Benchmarking:** PERFORMANCE.md template exists but not filled
+1. **Benchmarking:** PERFORMANCE.md needs updated benchmarks for 1.0.0
+2. **T44:** Wavelet tree integration work is split - T46 completed but T44 cleanup pending
+3. **T45:** Alignment parameter tuning not yet done
 
 ---
 

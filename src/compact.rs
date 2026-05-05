@@ -430,14 +430,7 @@ mod tests {
         builder.push(b"ACGTACGT");
         let index = builder.build();
 
-        eprintln!(
-            "DEBUG: index.len={}, f_column={:?}",
-            index.len, index.f_column
-        );
-        eprintln!("DEBUG: occ(c=3, idx=0) = {}", index.occ.occ(3, 0));
-        eprintln!("DEBUG: occ(c=3, idx=8) = {}", index.occ.occ(3, 8));
         let (left, right) = index.search(&[3]);
-        eprintln!("DEBUG: search([3]) = ({}, {})", left, right);
         assert!(left < right, "Should find T in ACGTACGT");
     }
 

@@ -17,6 +17,9 @@ libsais-rs = "0.1"
 wavelet-matrix = "0.4.7"
 rayon = "1.10"
 
+[dev-dependencies]
+criterion = "0.4"
+
 [lints.rust]
 unsafe_code = "deny"  # Allow per-module with #[allow(unsafe_code)]
 
