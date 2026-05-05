@@ -20,6 +20,28 @@ pub struct BWT {
 }
 
 impl BWT {
+    /// Build BWT from SA with n+1 entries (including sentinel suffix)
+    pub fn from_sa_with_sentinel(sequence: &[u8], sa: &SuffixArray) -> Self {
+        let len = sa.len();  // n+1
+        let n = sequence.len();
+        let mut bwt = Vec::with_capacity(len);
+
+        for &pos in &sa.sa {
+            if pos == 0 {
+                // Suffix starting at position 0: BWT entry is sentinel (last char is at position n-1)
+                bwt.push(4);
+            } else {
+                // All other suffixes: BWT entry is the character before the suffix start
+                // This includes the sentinel suffix at position n (pos = n)
+                // For the sentinel suffix, pos-1 = n-1, which is the last character of the original sequence
+                bwt.push(sequence[(pos - 1) as usize]);
+            }
+        }
+
+        Self { bwt, len }
+    }
+
+    /// Build BWT from SA (legacy method for compatibility)
     pub fn from_sa(sequence: &[u8], sa: &SuffixArray) -> Self {
         let len = sequence.len();
         let mut bwt = Vec::with_capacity(len + 1);
@@ -76,27 +98,62 @@ impl FMIndex {
         let sequence = reference.as_slice();
         let len = sequence.len();
 
-        let sa = SuffixArray::build(&sequence);
-        let bwt = BWT::from_sa(&sequence, &sa);
+        // Build suffix array with n+1 entries (including sentinel)
+        // We need to construct suffixes with sentinel appended, then sort
+        let mut padded = Vec::with_capacity(len + 1);
+        padded.extend_from_slice(&sequence);
+        padded.push(4);  // Sentinel character at position n
+
+        let sa = SuffixArray::build(&padded);
+        
+        // The SA from padded sequence has len+1 entries.
+        // The sentinel suffix (position n) is already in the correct sorted position.
+        // We just need to use it directly as our SA.
+        // The SA values still point to positions in the padded sequence, 
+        // so we need to remap them to original positions (position n becomes sentinel).
+        
+        let mut final_sa = Vec::with_capacity(len + 1);
+        for &pos in sa.as_slice() {
+            if pos as usize == len {
+                // This is the sentinel suffix - keep it as sentinel
+                final_sa.push(len as u32);  // Use n to represent sentinel
+            } else {
+                final_sa.push(pos);  // Keep original position
+            }
+        }
+        
+        let sa = SuffixArray::with_len(final_sa, len + 1);
+        
+        // Build BWT with n+1 entries (including sentinel)
+        let bwt = BWT::from_sa_with_sentinel(&sequence, &sa);
         let occ = CompactOccTable::from_bwt(bwt.as_slice());
 
         let mut total = [0u32; 5];
         for &c in &sequence {
             total[c as usize] += 1;
         }
+        // Add sentinel to total count
+        total[4] = 1;  // Sentinel is encoded as 4
 
         let mut f_column = [0u32; 5];
-        f_column[0] = 1;
+        // F[i] = position of first suffix starting with character i in sorted SA
+        // Formula: F[i] = 1 + sum of counts of all characters before i
+        // This gives 1-indexed positions: F[0]=1, F[1]=1+A, F[2]=1+A+C, etc.
+        // F[4] (sentinel) = n + 1 (points past the last character)
+        f_column[0] = 1;  // Sentinel (or A) is first
         for i in 1..5 {
-            f_column[i] = f_column[i - 1] + total[i - 1];
+            f_column[i] = 1 + total[..i].iter().sum::<u32>();
         }
+        // Override F[4] to be n + 1 (pointing past the last suffix)
+        // The sentinel is implicitly at the end of the BWT, after all other characters
+        f_column[4] = (len + 1) as u32;
 
         Self {
             bwt,
             sa,
             occ,
             f_column,
-            len,
+            len: len + 1,  // Include sentinel in length
         }
     }
 
@@ -107,8 +164,11 @@ impl FMIndex {
         for &c in pattern.iter().rev() {
             let occ_left = self.occ.occ(c, left);
             let occ_right = self.occ.occ(c, right);
-            left = self.f_column[c as usize] as usize + occ_left as usize;
-            right = self.f_column[c as usize] as usize + occ_right as usize;
+            // F[c] is 1-indexed (first position of character c in sorted SA)
+            // Subtract 1 to convert to 0-indexed before adding occ offset
+            let f_c = (self.f_column[c as usize] as usize).saturating_sub(1);
+            left = f_c + occ_left as usize;
+            right = f_c + occ_right as usize;
 
             if left >= right {
                 break;
@@ -249,7 +309,7 @@ mod tests {
     fn test_fm_index_search() {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
         let index = FMIndex::build(&ref_seq);
-        assert_eq!(index.len, 8);
+        assert_eq!(index.len, 9);  // n+1 with sentinel
 
         // Check search range for single character T
         let (left, right) = index.search(&[3]); // T
@@ -338,24 +398,28 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACAC").unwrap();
         let index = FMIndex::build(&ref_seq);
 
-        // Check BWT directly - it should be [1, 4, 0, 0]
-        // For ACAC: SA=[2, 0, 3, 1], BWT[0]=sequence[1]=C=1, BWT[1]=4, BWT[2]=sequence[2]=A=0, BWT[3]=sequence[0]=A=0
+        // BWT for ACAC is [$, C, A, A, C] = [4, 1, 0, 0, 1] with sentinel
         let bwt_slice = index.bwt.as_slice();
-        assert_eq!(bwt_slice.len(), 4, "BWT should have 4 entries");
-        assert_eq!(bwt_slice[0], 1, "BWT[0] should be 1 (C)");
-        assert_eq!(bwt_slice[1], 4, "BWT[1] should be 4 (sentinel)");
+        assert_eq!(bwt_slice.len(), 5, "BWT should have 5 entries (n+1 with sentinel)");
+        assert_eq!(bwt_slice[0], 4, "BWT[0] should be 4 (sentinel)");
+        assert_eq!(bwt_slice[1], 1, "BWT[1] should be 1 (C)");
         assert_eq!(bwt_slice[2], 0, "BWT[2] should be 0 (A)");
         assert_eq!(bwt_slice[3], 0, "BWT[3] should be 0 (A)");
+        assert_eq!(bwt_slice[4], 1, "BWT[4] should be 1 (C)");
 
         // Check occ at intermediate positions using the public API
-        assert_eq!(index.occ.occ(0, 1), 0, "occ(A, 1) should be 0");
+        // A (0) appears at positions 2 and 3
+        assert_eq!(index.occ.occ(0, 1), 0, "occ(A, 1) should be 0 (BWT[0] is $)");
         assert_eq!(index.occ.occ(0, 2), 0, "occ(A, 2) should be 0");
         assert_eq!(index.occ.occ(0, 3), 1, "occ(A, 3) should be 1");
         assert_eq!(index.occ.occ(0, 4), 2, "occ(A, 4) should be 2");
+        assert_eq!(index.occ.occ(0, 5), 2, "occ(A, 5) should be 2");
 
-        // Check occ for C
-        assert_eq!(index.occ.occ(1, 1), 1, "occ(C, 1) should be 1");
+        // C (1) appears at positions 1 and 4
+        assert_eq!(index.occ.occ(1, 1), 0, "occ(C, 1) should be 0 (BWT[0] is $)");
+        assert_eq!(index.occ.occ(1, 2), 1, "occ(C, 2) should be 1");
         assert_eq!(index.occ.occ(1, 4), 1, "occ(C, 4) should be 1");
+        assert_eq!(index.occ.occ(1, 5), 2, "occ(C, 5) should be 2");
         assert_eq!(index.occ.occ(1, 0), 0, "occ(C, 0) should be 0");
     }
 
@@ -363,7 +427,7 @@ mod tests {
     fn test_reference_length() {
         let ref_seq = Reference::parse_fasta(">test\nACGT").unwrap();
         let index = FMIndex::build(&ref_seq);
-        assert_eq!(index.len, 4);
+        assert_eq!(index.len, 5);  // n+1 with sentinel
     }
 
     #[test]

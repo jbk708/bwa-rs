@@ -8,10 +8,10 @@ Pure Rust implementation targeting C BWA-MEM performance.
 
 | Status | Count |
 |--------|-------|
-| ✅ Done | 38 |
+| ✅ Done | 39 |
 | 🔄 In Progress | 1 |
 | ⬜ Pending | 2 |
-| **Total** | **41** |
+| **Total** | **42** |
 
 ---
 
@@ -199,6 +199,36 @@ bwa-rs reported: 100006 with CIGAR 7M7X4=
 - `src/occ/wavelet_tree.rs` - added `Clone` and `Debug` implementations with `original_data` field
 - `src/compact.rs` - `CompactOccTable` derives `Clone` and `Debug`
 - `src/fm_index.rs` - uses `CompactOccTable` instead of `OccTable`, updated to version 3
+
+---
+
+### T50: Fix FM-index BWT/sentinel handling for long references ✅
+
+**Description:** The FM-index was not correctly handling the sentinel character for references longer than a few thousand base pairs, causing search failures for patterns near the end of the reference.
+
+**Root Cause:**
+1. **BWT length mismatch:** The BWT was built with n entries but FM-index used length n, missing the sentinel suffix
+2. **Incorrect BWT for sentinel suffix:** The BWT entry for the sentinel suffix (position n) was incorrectly set to sentinel value (4) instead of the last character of the sequence
+3. **F-column calculation:** The F-column didn't account for the sentinel character correctly
+4. **MmapFMIndex search bug:** The search function used `F[c]` directly instead of `F[c] - 1`
+
+**Fix:**
+1. Updated `FMIndex::build()` to build SA and BWT with n+1 entries (including sentinel)
+2. Fixed BWT construction: for suffix at position n, BWT entry is `sequence[n-1]` (last char)
+3. Updated F-column: `F[i] = 1 + sum(counts[0..i])` for i < 4, `F[4] = n + 1`
+4. Fixed MmapFMIndex search to use `F[c] - 1` like FMIndex
+5. Added `SuffixArray::with_len()` constructor for explicit length
+
+**Files Modified:**
+- `src/fm_index.rs` - BWT construction, F-column, SA handling
+- `src/mmap_index.rs` - BWT construction, search function
+- `src/sa.rs` - Added `with_len()` constructor
+
+**Verification:**
+- [x] All 231 tests pass
+- [x] GGGG search finds correct position in test reference
+- [x] ACGT pattern search works on 12bp and 50KB references
+- [x] FM-index and MmapFMIndex give consistent results
 
 ---
 
