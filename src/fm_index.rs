@@ -11,7 +11,9 @@ use crate::reference::Reference;
 use crate::sa::SuffixArray;
 
 const MAGIC: &[u8; 6] = b"BWAIDX";
-const VERSION: u8 = 3;
+// VERSION 4: 64-bit on-disk format (u64 SA positions, len, and F-column) so
+// references larger than ~2.1 Gbp (e.g. the human genome) can be indexed.
+const VERSION: u8 = 4;
 
 #[derive(Clone, Debug)]
 pub struct BWT {
@@ -89,19 +91,37 @@ pub struct FMIndex {
     pub bwt: BWT,
     pub sa: SuffixArray,
     pub occ: CompactOccTable,
-    pub f_column: [u32; 5],
+    pub f_column: [u64; 5],
     pub len: usize,
+    /// Length of the forward sequence. For a 2N index (see `build_2n`) this is
+    /// half the indexed sequence; an SA position `>= n_fwd` denotes a
+    /// reverse-strand hit. For an N-only index it equals the full length.
+    pub n_fwd: usize,
 }
 
 impl FMIndex {
+    /// Build an FM-index over the forward concatenation of all contigs (N-only).
     pub fn build(reference: &Reference) -> Self {
         let sequence = reference.as_slice();
+        let n_fwd = sequence.len();
+        Self::build_from_sequence(&sequence, n_fwd)
+    }
+
+    /// Build an FM-index over the 2N sequence (forward ++ reverse-complement),
+    /// matching bwa / bwa-mem2 so a single forward search covers both strands.
+    pub fn build_2n(reference: &Reference) -> Self {
+        let sequence = reference.as_slice_2n();
+        let n_fwd = reference.total_len();
+        Self::build_from_sequence(&sequence, n_fwd)
+    }
+
+    fn build_from_sequence(sequence: &[u8], n_fwd: usize) -> Self {
         let len = sequence.len();
 
         // Build suffix array with n+1 entries (including sentinel)
         // We need to construct suffixes with sentinel appended, then sort
         let mut padded = Vec::with_capacity(len + 1);
-        padded.extend_from_slice(&sequence);
+        padded.extend_from_slice(sequence);
         padded.push(4); // Sentinel character at position n
 
         let sa = SuffixArray::build(&padded);
@@ -116,7 +136,7 @@ impl FMIndex {
         for &pos in sa.as_slice() {
             if pos as usize == len {
                 // This is the sentinel suffix - keep it as sentinel
-                final_sa.push(len as u32); // Use n to represent sentinel
+                final_sa.push(len as u64); // Use n to represent sentinel
             } else {
                 final_sa.push(pos); // Keep original position
             }
@@ -125,34 +145,35 @@ impl FMIndex {
         let sa = SuffixArray::with_len(final_sa, len + 1);
 
         // Build BWT with n+1 entries (including sentinel)
-        let bwt = BWT::from_sa_with_sentinel(&sequence, &sa);
+        let bwt = BWT::from_sa_with_sentinel(sequence, &sa);
         let occ = CompactOccTable::from_bwt(bwt.as_slice());
 
-        let mut total = [0u32; 5];
-        for &c in &sequence {
+        let mut total = [0u64; 5];
+        for &c in sequence {
             total[c as usize] += 1;
         }
         // Add sentinel to total count
         total[4] = 1; // Sentinel is encoded as 4
 
-        let mut f_column = [0u32; 5];
+        let mut f_column = [0u64; 5];
         // F[i] = position of first suffix starting with character i in sorted SA
         // Formula: F[i] = 1 + sum of counts of all characters before i
         // This gives 1-indexed positions: F[0]=1, F[1]=1+A, F[2]=1+A+C, etc.
         // F[4] (sentinel) = n + 1 (points past the last character)
         f_column[0] = 1; // Sentinel (or A) is first
         for i in 1..5 {
-            f_column[i] = 1 + total[..i].iter().sum::<u32>();
+            f_column[i] = 1 + total[..i].iter().sum::<u64>();
         }
         // Override F[4] to be n + 1 (pointing past the last suffix)
         // The sentinel is implicitly at the end of the BWT, after all other characters
-        f_column[4] = (len + 1) as u32;
+        f_column[4] = (len + 1) as u64;
 
         Self {
             bwt,
             sa,
             occ,
             f_column,
+            n_fwd,
             len: len + 1, // Include sentinel in length
         }
     }
@@ -178,7 +199,7 @@ impl FMIndex {
         (left, right)
     }
 
-    pub fn get_position(&self, sa_idx: usize) -> Option<u32> {
+    pub fn get_position(&self, sa_idx: usize) -> Option<u64> {
         self.sa.get(sa_idx)
     }
 
@@ -187,7 +208,7 @@ impl FMIndex {
         right.saturating_sub(left)
     }
 
-    pub fn find_all(&self, pattern: &[u8]) -> Vec<u32> {
+    pub fn find_all(&self, pattern: &[u8]) -> Vec<u64> {
         let (left, right) = self.search(pattern);
         (left..right).filter_map(|i| self.sa.get(i)).collect()
     }
@@ -197,7 +218,8 @@ impl FMIndex {
 
         file.write_all(MAGIC)?;
         file.write_all(&[VERSION])?;
-        file.write_all(&(self.len as u32).to_le_bytes())?;
+        file.write_all(&(self.len as u64).to_le_bytes())?;
+        file.write_all(&(self.n_fwd as u64).to_le_bytes())?;
 
         for &fc in &self.f_column {
             file.write_all(&fc.to_le_bytes())?;
@@ -228,15 +250,19 @@ impl FMIndex {
             )));
         }
 
-        let mut len_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 8];
         file.read_exact(&mut len_bytes)?;
-        let len = u32::from_le_bytes(len_bytes) as usize;
+        let len = u64::from_le_bytes(len_bytes) as usize;
 
-        let mut f_column = [0u32; 5];
+        let mut n_fwd_bytes = [0u8; 8];
+        file.read_exact(&mut n_fwd_bytes)?;
+        let n_fwd = u64::from_le_bytes(n_fwd_bytes) as usize;
+
+        let mut f_column = [0u64; 5];
         for fc in &mut f_column {
-            let mut bytes = [0u8; 4];
+            let mut bytes = [0u8; 8];
             file.read_exact(&mut bytes)?;
-            *fc = u32::from_le_bytes(bytes);
+            *fc = u64::from_le_bytes(bytes);
         }
 
         let bwt = BWT::read_from(&mut file, len)?;
@@ -248,6 +274,7 @@ impl FMIndex {
             sa,
             occ,
             f_column,
+            n_fwd,
             len,
         })
     }
@@ -264,7 +291,7 @@ mod tests {
         assert_eq!(sa.len(), 9);
 
         // Check SA contains expected positions
-        let positions: Vec<u32> = (0..9).filter_map(|i| sa.get(i)).collect();
+        let positions: Vec<u64> = (0..9).filter_map(|i| sa.get(i)).collect();
         assert_eq!(positions.len(), 9);
     }
 
@@ -274,7 +301,7 @@ mod tests {
         let sa = SuffixArray::build(&seq);
 
         // Check that SA is sorted correctly
-        let sa_vals: Vec<u32> = (0..8).filter_map(|i| sa.get(i)).collect();
+        let sa_vals: Vec<u64> = (0..8).filter_map(|i| sa.get(i)).collect();
 
         // The suffixes should be sorted:
         // Position 4: ACGT (shorter, comes first)

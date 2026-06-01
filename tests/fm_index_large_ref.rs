@@ -173,7 +173,7 @@ fn test_f_column_correctness() {
         }
         // F[4] - 1 should be >= reference length
         assert!(
-            index.f_column[4] >= index.len as u32,
+            index.f_column[4] >= index.len as u64,
             "F[4]={} should be >= len={} for size {}",
             index.f_column[4],
             index.len,

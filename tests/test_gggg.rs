@@ -24,7 +24,7 @@ fn test_gggg_search() {
     // Find all occurrences of "GGGG" in reference
     let mut expected = Vec::new();
     for (i, _) in ref_seq.match_indices("GGGG") {
-        expected.push(i as u32);
+        expected.push(i as u64);
     }
     println!("Expected positions for GGGG: {:?}", expected);
 
@@ -65,7 +65,7 @@ fn test_ggggaaaaacccc_search() {
     // Find all occurrences of "GGGGAAAAACCCC"
     let mut expected = Vec::new();
     for (i, _) in ref_seq.match_indices("GGGGAAAAACCCC") {
-        expected.push(i as u32);
+        expected.push(i as u64);
     }
     println!("\nExpected positions for GGGGAAAAACCCC: {:?}", expected);
 

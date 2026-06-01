@@ -9,44 +9,50 @@ pub use crate::utils::{encode_sequence, encode_sequence_u16};
 
 /// Build suffix array using integer alphabet via libsais-rs.
 /// Returns indices into the original sequence.
-pub fn build_sa_integer(seq: &[u8]) -> Vec<u32> {
+///
+/// Uses the 64-bit libsais entry point so references larger than the i32 SA
+/// limit (~2.147 Gbp) can be indexed — e.g. the full human genome (3.1 Gbp).
+pub fn build_sa_integer(seq: &[u8]) -> Vec<u64> {
     if seq.is_empty() {
         return vec![];
     }
     let n = seq.len();
-    let mut sa = vec![0i32; n];
-    // fs=0 for standard SA construction, freq=None for no frequency output
-    libsais_rs::libsais(seq, &mut sa, 0, None);
-    sa.into_iter().map(|x| x as u32).collect()
+    let mut sa = vec![0i64; n];
+    // fs=0 for standard SA construction, freq=None for no frequency output.
+    // Use the multithreaded (rayon-backed) entry point; libsais only parallelizes
+    // for large inputs (n >= 65536) and falls back to serial otherwise.
+    let threads = rayon::current_num_threads().max(1) as i64;
+    libsais_rs::libsais64::libsais64_omp(seq, &mut sa, 0, None, threads);
+    sa.into_iter().map(|x| x as u64).collect()
 }
 
 /// Build suffix array from pre-encoded integer sequence.
-pub fn build_sa_from_encoded(encoded: &[u8]) -> Vec<u32> {
+pub fn build_sa_from_encoded(encoded: &[u8]) -> Vec<u64> {
     if encoded.is_empty() {
         return vec![];
     }
     let n = encoded.len();
-    let mut sa = vec![0i32; n];
-    libsais_rs::libsais(encoded, &mut sa, 0, None);
-    sa.into_iter().map(|x| x as u32).collect()
+    let mut sa = vec![0i64; n];
+    libsais_rs::libsais64(encoded, &mut sa, 0, None);
+    sa.into_iter().map(|x| x as u64).collect()
 }
 
-/// Build suffix array using i32-encoded integer alphabet.
-pub fn build_sa_i32(encoded: &[i32], alphabet_size: i32) -> Vec<u32> {
+/// Build suffix array using integer-encoded alphabet (64-bit).
+pub fn build_sa_i32(encoded: &[i32], alphabet_size: i32) -> Vec<u64> {
     if encoded.is_empty() {
         return vec![];
     }
     let n = encoded.len();
-    let mut sa = vec![0i32; n];
-    let mut encoded_i32 = encoded.to_vec();
+    let mut sa = vec![0i64; n];
+    let mut encoded_i64: Vec<i64> = encoded.iter().map(|&x| x as i64).collect();
     // k = alphabet size, fs = 0
-    libsais_rs::libsais_int(&mut encoded_i32, &mut sa, alphabet_size, 0);
-    sa.into_iter().map(|x| x as u32).collect()
+    libsais_rs::libsais64::libsais64_int(&mut encoded_i64, &mut sa, alphabet_size as i64, 0);
+    sa.into_iter().map(|x| x as u64).collect()
 }
 
 #[derive(Clone, Debug)]
 pub struct SuffixArray {
-    pub sa: Vec<u32>,
+    pub sa: Vec<u64>,
     len: usize,
 }
 
@@ -68,11 +74,11 @@ impl SuffixArray {
 
     /// Create a new SuffixArray with pre-computed SA values and explicit length
     /// Used by FM-index which needs n+1 entries including sentinel
-    pub fn with_len(sa: Vec<u32>, len: usize) -> Self {
+    pub fn with_len(sa: Vec<u64>, len: usize) -> Self {
         Self { sa, len }
     }
 
-    pub fn get(&self, idx: usize) -> Option<u32> {
+    pub fn get(&self, idx: usize) -> Option<u64> {
         self.sa.get(idx).copied()
     }
 
@@ -84,7 +90,7 @@ impl SuffixArray {
         self.len == 0
     }
 
-    pub fn as_slice(&self) -> &[u32] {
+    pub fn as_slice(&self) -> &[u64] {
         &self.sa
     }
 
@@ -98,9 +104,9 @@ impl SuffixArray {
     pub fn read_from(reader: &mut impl Read, count: usize) -> std::io::Result<Self> {
         let mut sa = Vec::with_capacity(count);
         for _ in 0..count {
-            let mut bytes = [0u8; 4];
+            let mut bytes = [0u8; 8];
             reader.read_exact(&mut bytes)?;
-            sa.push(u32::from_le_bytes(bytes));
+            sa.push(u64::from_le_bytes(bytes));
         }
         Ok(Self { sa, len: count })
     }
@@ -109,7 +115,7 @@ impl SuffixArray {
 pub fn build_sa_streaming<'a>(
     sequence: &'a [u8],
     chunk_size: usize,
-) -> impl Iterator<Item = Vec<u32>> + 'a
+) -> impl Iterator<Item = Vec<u64>> + 'a
 where
     &'a [u8]: 'a,
 {
@@ -118,21 +124,21 @@ where
         .map(|chunk| SuffixArray::build(chunk).sa)
 }
 
-pub fn build_sa_with_sentinel(sequence: &[u8]) -> Vec<u32> {
+pub fn build_sa_with_sentinel(sequence: &[u8]) -> Vec<u64> {
     let n = sequence.len();
     let mut padded = Vec::with_capacity(n + 1);
     padded.extend_from_slice(sequence);
     padded.push(4);
 
     let sa = SuffixArray::build(&padded);
-    let mut result: Vec<u32> = sa.into_iter().filter(|&x| x != n as u32).collect();
+    let mut result: Vec<u64> = sa.into_iter().filter(|&x| x != n as u64).collect();
     result.sort();
     result
 }
 
 impl IntoIterator for SuffixArray {
-    type Item = u32;
-    type IntoIter = std::vec::IntoIter<u32>;
+    type Item = u64;
+    type IntoIter = std::vec::IntoIter<u64>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.sa.into_iter()
@@ -140,8 +146,8 @@ impl IntoIterator for SuffixArray {
 }
 
 impl<'a> IntoIterator for &'a SuffixArray {
-    type Item = &'a u32;
-    type IntoIter = std::slice::Iter<'a, u32>;
+    type Item = &'a u64;
+    type IntoIter = std::slice::Iter<'a, u64>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.sa.iter()
@@ -152,7 +158,7 @@ impl<'a> IntoIterator for &'a SuffixArray {
 mod tests {
     use super::*;
 
-    fn verify_sa(seq: &[u8], sa: &[u32]) -> bool {
+    fn verify_sa(seq: &[u8], sa: &[u64]) -> bool {
         if sa.len() != seq.len() {
             return false;
         }
@@ -186,7 +192,7 @@ mod tests {
     fn test_sa_small() {
         let seq = b"A";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals));
     }
 
@@ -194,7 +200,7 @@ mod tests {
     fn test_sa_two_chars() {
         let seq = b"AC";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals), "SA for AC: {:?}", vals);
     }
 
@@ -202,7 +208,7 @@ mod tests {
     fn test_sa_acgt() {
         let seq = b"ACGT";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals), "SA for ACGT: {:?}", vals);
     }
 
@@ -210,7 +216,7 @@ mod tests {
     fn test_sa_repeated() {
         let seq = b"AAAA";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals));
     }
 
@@ -218,7 +224,7 @@ mod tests {
     fn test_sa_medium() {
         let seq = b"AACGAACGG";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals), "SA for AACGAACGG: {:?}", vals);
     }
 
@@ -226,7 +232,7 @@ mod tests {
     fn test_sa_acgtacgt() {
         let seq = b"ACGTACGT";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals), "SA for ACGTACGT: {:?}", vals);
     }
 
@@ -234,7 +240,7 @@ mod tests {
     fn test_sa_random() {
         let seq = b"GATCGATCGA";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals));
     }
 
@@ -242,7 +248,7 @@ mod tests {
     fn test_sa_longer() {
         let seq = b"ABABABABA";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals));
     }
 
@@ -257,7 +263,7 @@ mod tests {
     fn test_sa_with_n() {
         let seq = b"ACGNACGT";
         let sa = SuffixArray::build(seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(seq, &vals));
     }
 
@@ -284,7 +290,7 @@ mod tests {
     fn test_large_sequence() {
         let seq: Vec<u8> = b"ACGT".repeat(100);
         let sa = SuffixArray::build(&seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(&seq, &vals), "SA for large sequence failed");
     }
 
@@ -293,7 +299,7 @@ mod tests {
         // T48: SA-IS crash on sequences > ~2000bp
         let seq: Vec<u8> = b"ACGT".repeat(1250); // 5000bp
         let sa = SuffixArray::build(&seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert_eq!(vals.len(), 5000, "SA length should match sequence length");
         assert!(
             verify_sa(&seq, &vals),
@@ -305,7 +311,7 @@ mod tests {
     fn test_all_same_char() {
         let seq = vec![0u8; 100];
         let sa = SuffixArray::build(&seq);
-        let vals: Vec<u32> = sa.into_iter().collect();
+        let vals: Vec<u64> = sa.into_iter().collect();
         assert!(verify_sa(&seq, &vals), "SA for all same char failed");
     }
 
@@ -314,7 +320,7 @@ mod tests {
         for len in [1, 2, 5, 10, 20, 50, 100, 500, 1000] {
             let seq: Vec<u8> = (0..len).map(|i| (i % 5) as u8).collect();
             let sa = SuffixArray::build(&seq);
-            let vals: Vec<u32> = sa.into_iter().collect();
+            let vals: Vec<u64> = sa.into_iter().collect();
             assert!(verify_sa(&seq, &vals), "SA for len={} should be valid", len);
         }
     }
@@ -444,7 +450,7 @@ mod tests {
         assert_eq!(sa_byte.len(), sa_int.len());
 
         // Both should be valid suffix arrays
-        let vals_byte: Vec<u32> = sa_byte.into_iter().collect();
+        let vals_byte: Vec<u64> = sa_byte.into_iter().collect();
         assert!(verify_sa(seq, &vals_byte));
         assert!(verify_sa(seq, &sa_int));
     }
