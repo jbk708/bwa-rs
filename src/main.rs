@@ -63,7 +63,8 @@ fn main() -> Result<(), BwaError> {
     match cli {
         Cli::Index(args) => {
             let reference = Reference::from_fasta(&args.reference)?;
-            let _index = FMIndex::build(&reference);
+            // 2N index (forward + reverse-complement), matching bwa / bwa-mem2.
+            let _index = FMIndex::build_2n(&reference);
             println!("Indexed {} bases", reference.total_len());
             println!("Index prefix: {:?}", args.prefix);
             Ok(())
@@ -80,8 +81,11 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     }
 
     let reference = Reference::from_fasta(&args.reference)?;
-    let ref_data = reference.as_slice();
-    let index = FMIndex::build(&reference);
+    // Build the 2N index and extend against the 2N sequence so the aligner can
+    // place reads on both strands (positions in the reverse-complement half are
+    // mapped back to forward coordinates with the 0x10 flag set).
+    let ref_data = reference.as_slice_2n();
+    let index = FMIndex::build_2n(&reference);
 
     let aligner =
         ParallelAligner::new(index, ref_data.to_vec()).min_seed_len(args.min_seed_len as usize);
@@ -166,21 +170,17 @@ fn write_sam_record(
     result: &AlignmentResult,
     is_mate: bool,
 ) -> Result<(), BwaError> {
-    let flag = if result.position == 0 { 0x4 } else { 0 };
+    let mapped = !result.cigar.ops.is_empty() && (result.flag & 0x4) == 0;
+    let mut flag = if mapped { 0 } else { 0x4 };
+    if mapped && result.reverse_strand {
+        flag |= 0x10; // SEQ is reverse-complemented relative to the reference
+    }
     let flag = if is_mate { flag | 0x80 } else { flag };
-    let rname = if result.position == 0 { "*" } else { "ref" };
-    let pos = if result.position == 0 {
-        0
-    } else {
-        result.position as i64 + 1
-    };
-    let mapq = result.mapq;
+    let rname = if mapped { "ref" } else { "*" };
+    let pos = if mapped { result.position as i64 + 1 } else { 0 };
+    let mapq = if mapped { result.mapq } else { 0 };
     let cigar_str = result.cigar.to_string();
-    let cigar = if result.cigar.ops.is_empty() {
-        "*"
-    } else {
-        cigar_str.as_str()
-    };
+    let cigar = if mapped { cigar_str.as_str() } else { "*" };
     let rnext = "*";
     let pnext: i64 = 0;
     let tlen: i64 = 0;

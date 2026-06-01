@@ -146,23 +146,23 @@ impl CompactOccTable {
         }
     }
 
-    pub fn occ(&self, c: u8, idx: usize) -> u32 {
+    pub fn occ(&self, c: u8, idx: usize) -> u64 {
         if idx == 0 || self.len == 0 {
             return 0;
         }
         let idx = idx.min(self.len);
-        self.wavelet.rank(c, idx) as u32
+        self.wavelet.rank(c, idx) as u64
     }
 
     pub fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
-        writer.write_all(&(self.len as u32).to_le_bytes())
+        writer.write_all(&(self.len as u64).to_le_bytes())
     }
 
     #[allow(dead_code)]
     fn read_from(reader: &mut impl Read) -> io::Result<Self> {
-        let mut len_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 8];
         reader.read_exact(&mut len_bytes)?;
-        let len = u32::from_le_bytes(len_bytes) as usize;
+        let len = u64::from_le_bytes(len_bytes) as usize;
         Ok(Self {
             wavelet: WaveletTree::from_bwt(&[]),
             len,

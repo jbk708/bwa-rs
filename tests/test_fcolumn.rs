@@ -33,9 +33,9 @@ fn test_simple_pattern_search() {
         );
 
         // Verify by checking actual locations in reference
-        let mut expected: Vec<u32> = Vec::new();
+        let mut expected: Vec<u64> = Vec::new();
         for (i, _) in ref_seq.match_indices(pattern) {
-            expected.push(i as u32);
+            expected.push(i as u64);
         }
 
         // Sort both since FM-index returns positions in SA order, not position order
@@ -55,7 +55,7 @@ fn test_simple_pattern_search() {
 fn test_large_pattern_search() {
     // Create a reference with pattern at known position
     let ref_len = 50_000;
-    let pattern_pos = 10000u32;
+    let pattern_pos = 10000u64;
     let pattern = "GGGGAAAAACCCC";
 
     let mut ref_bytes = Vec::with_capacity(ref_len);
@@ -126,7 +126,7 @@ fn test_debug_fm_index() {
     // Show suffixes in SA that start with G
     eprintln!("\nSuffixes starting with G:");
     for (i, &pos) in index.sa.as_slice().iter().enumerate() {
-        if pos < ref_seq.len() as u32 {
+        if pos < ref_seq.len() as u64 {
             let suffix = &ref_seq[pos as usize..];
             if suffix.starts_with("G") {
                 eprintln!(
@@ -192,7 +192,7 @@ fn test_debug_wavelet_rank() {
     // Check wavelet tree rank at different positions
     for i in 0..=bwt.len() {
         let wt_rank = index.occ.occ(2, i);
-        let mut expected = 0u32;
+        let mut expected = 0u64;
         for j in 0..i {
             if bwt[j] == 2 {
                 expected += 1;
@@ -211,7 +211,7 @@ fn test_debug_wavelet_rank() {
     eprintln!("\nChecking A ranks:");
     for i in 0..=bwt.len() {
         let wt_rank = index.occ.occ(0, i);
-        let mut expected = 0u32;
+        let mut expected = 0u64;
         for j in 0..i {
             if bwt[j] == 0 {
                 expected += 1;
@@ -279,7 +279,7 @@ fn test_debug_search_trace() {
             eprintln!("  Suffixes in range [{}, {}):", left, right);
             for i in left..right.min(left + 5) {
                 if let Some(pos) = index.sa.get(i) {
-                    let suffix = if pos < ref_seq.len() as u32 {
+                    let suffix = if pos < ref_seq.len() as u64 {
                         &ref_seq[pos as usize..(pos as usize + 10).min(ref_seq.len())]
                     } else {
                         "SENTINEL"
@@ -320,7 +320,7 @@ fn test_debug_padded_sa() {
     let sa_padded = bwa_mem::sa::SuffixArray::build(&padded);
     eprintln!("\nSA of padded sequence:");
     for (i, &pos) in sa_padded.as_slice().iter().enumerate() {
-        let suffix = if pos < padded.len() as u32 {
+        let suffix = if pos < padded.len() as u64 {
             let end = (pos as usize + 15).min(padded.len());
             format!("{:?}", &padded[pos as usize..end])
         } else {
@@ -421,7 +421,7 @@ fn test_debug_sa_ordering() {
     println!("\nlibsais SA: {:?}", sa.as_slice());
 
     let expected: Vec<usize> = sorted.iter().map(|(_, pos)| *pos).collect();
-    let actual: Vec<u32> = sa.as_slice().to_vec();
+    let actual: Vec<u64> = sa.as_slice().to_vec();
 
     if expected != actual.iter().map(|&x| x as usize).collect::<Vec<_>>() {
         println!("\nSA MISMATCH!");

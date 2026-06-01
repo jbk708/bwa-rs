@@ -131,7 +131,9 @@ impl MmapFMIndex {
         file.write_all(&bwt)?;
 
         for i in 0..len {
-            file.write_all(&(sa.get(i).unwrap_or(0)).to_le_bytes())?;
+            // mmap_index keeps a 32-bit on-disk SA format (≤4.29 Gbp); the main
+            // FMIndex path is the 64-bit one. SA values fit u32 for refs in range.
+            file.write_all(&(sa.get(i).unwrap_or(0) as u32).to_le_bytes())?;
         }
 
         // Build occ table from original sequence (not BWT) for correct counts
@@ -213,13 +215,13 @@ impl MmapFMIndex {
         (left, right)
     }
 
-    pub fn get_position(&self, sa_idx: usize) -> Option<u32> {
+    pub fn get_position(&self, sa_idx: usize) -> Option<u64> {
         if sa_idx >= self.len {
             return None;
         }
         let offset = self.sa_offset + sa_idx * 4;
         let pos = u32::from_le_bytes(self.mmap[offset..offset + 4].try_into().unwrap());
-        Some(pos)
+        Some(pos as u64)
     }
 
     pub fn count(&self, pattern: &[u8]) -> usize {
@@ -227,7 +229,7 @@ impl MmapFMIndex {
         right - left
     }
 
-    pub fn find_all(&self, pattern: &[u8]) -> Vec<u32> {
+    pub fn find_all(&self, pattern: &[u8]) -> Vec<u64> {
         let (left, right) = self.search(pattern);
         (left..right).filter_map(|i| self.get_position(i)).collect()
     }

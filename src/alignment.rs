@@ -126,11 +126,31 @@ impl Aligner {
         let ref_start = seed.ref_start.saturating_sub(backward.query_end);
         let _ref_end = seed.ref_end() + forward.ref_end.saturating_sub(seed.ref_end());
 
+        // nm / score / MD are computed in the coordinate space the alignment was
+        // built in (the indexed sequence, which is 2N for a build_2n index).
         let nm = self.compute_nm(&cigar, query, ref_seq, ref_start);
         let score = self.compute_alignment_score(&cigar, query, ref_seq, ref_start);
+        let md_tag = AlignmentResult::new(ref_start, cigar.clone()).mdz_string(query, ref_seq);
 
-        let mut result = AlignmentResult::new(ref_start, cigar);
-        let md_tag = result.mdz_string(query, ref_seq);
+        // Map an indexed-space position to the reported forward-strand position.
+        // For a 2N index, positions >= n_fwd fall in the reverse-complement half:
+        // a hit covering [p, p+L) there corresponds to forward [2N - p - L, 2N - p)
+        // on the reverse strand, and the CIGAR is reversed to forward orientation.
+        let n_fwd = self.index.n_fwd;
+        let ref_len = cigar.reference_length();
+        let (position, reverse_strand, cigar) = if n_fwd > 0 && ref_start >= n_fwd {
+            let fwd_pos = (2 * n_fwd).saturating_sub(ref_start + ref_len);
+            let mut rev = Cigar::new();
+            for &(op, len) in cigar.ops.iter().rev() {
+                rev.push(op, len);
+            }
+            (fwd_pos, true, rev)
+        } else {
+            (ref_start, false, cigar)
+        };
+
+        let mut result = AlignmentResult::new(position, cigar);
+        result.reverse_strand = reverse_strand;
         result.score = score;
         result.nm = nm;
         result.mapq = self.calculate_mapq(std::slice::from_ref(&chain.mem), score);
@@ -565,9 +585,17 @@ pub fn affine_extend_forward(
         };
     }
 
-    let ref_end = (start_pos + ref_len).min(reference.len());
-    let actual_ref_len = ref_end - start_pos;
     let bw = bandwidth.clamp(1, 256);
+    // The banded DP only ever touches columns j in [i-bw, i+bw] for rows
+    // i in 1..=query_len, so column index never exceeds query_len + bw. Cap the
+    // reference window (and thus the allocated matrix) to that band width;
+    // anything beyond it is dead space. Without this cap the matrix is sized by
+    // the full remaining reference length (up to the whole chromosome), which
+    // allocates hundreds of GB and OOM-kills the process.
+    let max_span = query_len + bw + 1;
+    let actual_ref_len = ref_len.min(max_span);
+    let ref_end = (start_pos + actual_ref_len).min(reference.len());
+    let actual_ref_len = ref_end - start_pos;
 
     let mut dp = AffineDP::new(query_len, actual_ref_len);
     dp.set_m(0, 0, 0);
