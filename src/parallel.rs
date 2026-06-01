@@ -238,6 +238,7 @@ mod tests {
             mismatch_penalty: 5,
             gap_open: 8,
             gap_extend: 2,
+            ..Scoring::default()
         };
 
         let aligner = ParallelAligner::new(index, ref_data).scoring(scoring.clone());
