@@ -177,7 +177,11 @@ fn write_sam_record(
     }
     let flag = if is_mate { flag | 0x80 } else { flag };
     let rname = if mapped { "ref" } else { "*" };
-    let pos = if mapped { result.position as i64 + 1 } else { 0 };
+    let pos = if mapped {
+        result.position as i64 + 1
+    } else {
+        0
+    };
     let mapq = if mapped { result.mapq } else { 0 };
     let cigar_str = result.cigar.to_string();
     let cigar = if mapped { cigar_str.as_str() } else { "*" };
