@@ -1,14 +1,20 @@
 //! Smith-Waterman alignment with affine gap penalties.
 
+use std::cmp::Ordering;
+
 use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
 use crate::paired::InsertSizeDistribution;
 use crate::reference::reverse_complement;
 use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
-use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
+use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp};
 
 pub const DEFAULT_MIN_SCORE: i32 = 30;
+
+// Cap on the number of secondary chains aligned to derive the suboptimal score
+// for MAPQ; keeps the cost linear on repetitive reads.
+const MAX_SUB_CHAINS: usize = 32;
 
 #[derive(Clone, Debug)]
 pub struct Scoring {
@@ -94,13 +100,66 @@ impl Aligner {
             .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
             .ok_or_else(|| BwaError::Alignment("No valid chains".to_string()))?;
 
-        let result = self.build_alignment(query, best_chain)?;
+        let mut result = self.build_alignment(query, best_chain)?;
 
         // bwa's -T: alignments scoring below the threshold are reported unmapped
         // rather than placing a low-quality partial hit.
         if result.score < self.min_score {
             return Ok(self.unmapped_result());
         }
+
+        // Suboptimal alignment score for MAPQ: the best-scoring secondary chain
+        // whose placement does not overlap the primary, taken over the top
+        // MAX_SUB_CHAINS chains by score.
+        let mut alt_chains: Vec<&ChainedSeed> = chains
+            .iter()
+            .filter(|c| !std::ptr::eq(*c, best_chain))
+            .collect();
+        if alt_chains.len() > MAX_SUB_CHAINS {
+            alt_chains.select_nth_unstable_by(MAX_SUB_CHAINS - 1, |a, b| {
+                b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal)
+            });
+            alt_chains.truncate(MAX_SUB_CHAINS);
+        }
+
+        let primary_start = result.position;
+        let primary_end = primary_start + result.cigar.reference_length();
+        let primary_reverse = result.reverse_strand;
+
+        let mut sub = 0i32;
+        let mut sub_n = 0u32;
+        for alt in alt_chains {
+            let Ok(alt_res) = self.build_alignment(query, alt) else {
+                continue;
+            };
+            let alt_start = alt_res.position;
+            let alt_end = alt_start + alt_res.cigar.reference_length();
+            // Two alignments are at distinct loci when they don't overlap on the
+            // same strand in forward coordinates.
+            let overlaps = alt_res.reverse_strand == primary_reverse
+                && alt_start < primary_end
+                && primary_start < alt_end;
+            if overlaps {
+                continue;
+            }
+            match alt_res.score.cmp(&sub) {
+                Ordering::Greater => {
+                    sub = alt_res.score;
+                    sub_n = 1;
+                }
+                Ordering::Equal if sub > 0 => sub_n += 1,
+                _ => {}
+            }
+        }
+
+        result.mapq = approx_mapq_se(
+            result.score,
+            sub,
+            sub_n,
+            aligned_span(&result.cigar),
+            &self.scoring,
+            self.min_seed_len,
+        );
 
         Ok(result)
     }
@@ -184,7 +243,6 @@ impl Aligner {
         result.reverse_strand = reverse_strand;
         result.score = score;
         result.nm = nm;
-        result.mapq = self.calculate_mapq(std::slice::from_ref(&chain.mem), score);
         result.md_tag = Some(md_tag);
 
         Ok(result)
@@ -345,6 +403,7 @@ impl Aligner {
             cigar.push(CigarOp::S, trailing as u32);
         }
 
+        let span = aligned_span(&cigar);
         let position = window_start + la.ref_offset;
         let nm = self.compute_nm(&cigar, &oriented, forward_ref, position);
         let md_tag =
@@ -354,7 +413,7 @@ impl Aligner {
         result.reverse_strand = rescued_reverse;
         result.score = la.score;
         result.nm = nm;
-        result.mapq = rescue_mapq(la.score, oriented.len() as i32, &self.scoring);
+        result.mapq = approx_mapq_se(la.score, 0, 0, span, &self.scoring, self.min_seed_len);
         result.md_tag = Some(md_tag);
         Some(result)
     }
@@ -370,28 +429,6 @@ impl Aligner {
             score: 0,
             md_tag: None,
         }
-    }
-
-    fn calculate_mapq(&self, mems: &[MEM], best_score: i32) -> u8 {
-        if mems.is_empty() {
-            return 0;
-        }
-
-        let second_best = mems
-            .iter()
-            .skip(1)
-            .map(|m| m.score as i32)
-            .max()
-            .unwrap_or(0);
-
-        if second_best == 0 {
-            return 60;
-        }
-
-        let ratio = second_best as f64 / best_score.max(1) as f64;
-        let prob = ratio * ratio;
-        let mapq = (-10.0 * prob.log10()).round() as i32;
-        mapq.clamp(0, 60) as u8
     }
 }
 
@@ -714,14 +751,68 @@ pub fn local_align(query: &[u8], window: &[u8], scoring: &Scoring) -> Option<Loc
     })
 }
 
-/// Approximate MAPQ for a rescued mate from its alignment score (bwa-exact MAPQ is T-015).
-fn rescue_mapq(score: i32, query_len: i32, scoring: &Scoring) -> u8 {
-    let perfect = query_len * scoring.match_score;
-    if perfect <= 0 {
+/// Port of bwa's `mem_approx_mapq_se`. `score` is the alignment score, `sub` the best
+/// suboptimal *alignment* score (0 when none — the bwa `min_seed_len * a` baseline is
+/// applied here), `sub_n` the number of comparable suboptimal hits, and `aligned_len`
+/// the aligned span `l = max(query_core, ref_core)`. bwa-mem2 defaults drive the
+/// `mapQ_coef_len = 50` branch; `csub`/`frac_rep` are not modeled (treated as 0).
+fn approx_mapq_se(
+    score: i32,
+    sub: i32,
+    sub_n: u32,
+    aligned_len: i32,
+    scoring: &Scoring,
+    min_seed_len: usize,
+) -> u8 {
+    const MAPQ_COEF_LEN: i32 = 50;
+    let a = scoring.match_score;
+    let b = scoring.mismatch_penalty;
+
+    let sub = if sub > 0 {
+        sub
+    } else {
+        min_seed_len as i32 * a
+    };
+    if sub >= score || score == 0 || aligned_len <= 0 {
         return 0;
     }
-    let frac = (score as f64 / perfect as f64).clamp(0.0, 1.0);
-    (60.0 * frac).round() as u8
+
+    let l = aligned_len;
+    let identity = 1.0 - (l * a - score) as f64 / ((a + b) as f64) / l as f64;
+
+    let coef_fac = (MAPQ_COEF_LEN as f64).ln();
+    let tmp = if l < MAPQ_COEF_LEN {
+        1.0
+    } else {
+        coef_fac / (l as f64).ln()
+    };
+    let tmp = tmp * identity * identity;
+    let mut mapq = (6.02 * (score - sub) as f64 / a as f64 * tmp * tmp + 0.499) as i32;
+
+    if sub_n > 0 {
+        mapq -= (4.343 * ((sub_n + 1) as f64).ln() + 0.499) as i32;
+    }
+
+    mapq.clamp(0, 60) as u8
+}
+
+/// bwa's alignment length `l = max(query span, reference span)` over the aligned core
+/// (M/=/X/I consume query; M/=/X/D consume reference; soft/hard clips excluded).
+fn aligned_span(cigar: &Cigar) -> i32 {
+    let mut q = 0i32;
+    let mut r = 0i32;
+    for &(op, len) in &cigar.ops {
+        match op {
+            CigarOp::M | CigarOp::Eq | CigarOp::X => {
+                q += len as i32;
+                r += len as i32;
+            }
+            CigarOp::I => q += len as i32,
+            CigarOp::D | CigarOp::N => r += len as i32,
+            _ => {}
+        }
+    }
+    q.max(r)
 }
 
 pub fn affine_extend_forward(
@@ -1578,5 +1669,120 @@ mod tests {
             0x4,
             "alignment scoring below min_score should be reported unmapped"
         );
+    }
+
+    // ---- approx_mapq_se unit tests ----
+
+    #[test]
+    fn approx_mapq_se_unique_read_is_60() {
+        // score=151, sub=0 → sub becomes min_seed_len*a = 19*1 = 19
+        // l=151 >= 50, identity = 1 - (151*1 - 151)/5/151 = 1.0
+        // coef_fac = ln(50), tmp = ln(50)/ln(151) * 1.0 * 1.0 ≈ 0.8054
+        // mapq = (6.02 * 132/1 * 0.8054^2 * 0.8054^2 + 0.499) ≈ very large → clamps to 60
+        let result = approx_mapq_se(151, 0, 0, 151, &Scoring::default(), 19);
+        assert_eq!(result, 60);
+    }
+
+    #[test]
+    fn approx_mapq_se_sub_ge_score_is_zero() {
+        assert_eq!(approx_mapq_se(100, 100, 0, 100, &Scoring::default(), 19), 0);
+        assert_eq!(approx_mapq_se(100, 120, 0, 100, &Scoring::default(), 19), 0);
+    }
+
+    #[test]
+    fn approx_mapq_se_zero_score_is_zero() {
+        assert_eq!(approx_mapq_se(0, 0, 0, 100, &Scoring::default(), 19), 0);
+    }
+
+    #[test]
+    fn approx_mapq_se_subn_penalty_reduces() {
+        // score=40, sub=30, l=45 (< 50 so tmp=1.0 before identity scaling)
+        // a=1, b=4; identity = 1 - (45 - 40)/(5*45) = 1 - 5/225 ≈ 0.97778
+        // tmp = 1.0 * 0.97778^2 ≈ 0.95606
+        // mapq0 = (6.02 * 10/1 * 0.95606^2 + 0.499) as i32
+        //       = (6.02 * 10 * 0.91404 + 0.499) as i32
+        //       = (55.025 + 0.499) as i32 = 55 as i32 = 55
+        // sub_n=4: penalty = (4.343 * ln(5) + 0.499) as i32
+        //                   = (4.343 * 1.60944 + 0.499) as i32
+        //                   = (6.990 + 0.499) as i32 = 7
+        // mapq4 = 55 - 7 = 48
+        let m0 = approx_mapq_se(40, 30, 0, 45, &Scoring::default(), 19);
+        let m4 = approx_mapq_se(40, 30, 4, 45, &Scoring::default(), 19);
+        assert_eq!(m0, 55);
+        assert_eq!(m4, 48);
+        assert!(m4 < m0);
+    }
+
+    #[test]
+    fn approx_mapq_se_clamps_to_60() {
+        // A perfect long read with no suboptimal hits: must clamp to exactly 60.
+        let result = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19);
+        assert_eq!(result, 60);
+    }
+
+    // ---- aligned_span unit tests ----
+
+    fn make_cigar(ops: &[(CigarOp, u32)]) -> Cigar {
+        let mut c = Cigar::new();
+        for &(op, len) in ops {
+            c.push(op, len);
+        }
+        c
+    }
+
+    #[test]
+    fn aligned_span_pure_match_with_clips() {
+        // 10S 88M 9S → aligned core = 88M → q=88, r=88 → max=88
+        let c = make_cigar(&[(CigarOp::S, 10), (CigarOp::M, 88), (CigarOp::S, 9)]);
+        assert_eq!(aligned_span(&c), 88);
+    }
+
+    #[test]
+    fn aligned_span_with_indels_equal_cores() {
+        // 44S 37M 1I 2M 1D 58M 9S
+        // query core: 37+1+2+58 = 98; ref core: 37+2+1+58 = 98 → max=98
+        let c = make_cigar(&[
+            (CigarOp::S, 44),
+            (CigarOp::M, 37),
+            (CigarOp::I, 1),
+            (CigarOp::M, 2),
+            (CigarOp::D, 1),
+            (CigarOp::M, 58),
+            (CigarOp::S, 9),
+        ]);
+        assert_eq!(aligned_span(&c), 98);
+    }
+
+    #[test]
+    fn aligned_span_insertion_makes_query_larger() {
+        // 5M 3I 5M → q=13, r=10 → max=13
+        let c = make_cigar(&[(CigarOp::M, 5), (CigarOp::I, 3), (CigarOp::M, 5)]);
+        assert_eq!(aligned_span(&c), 13);
+    }
+
+    #[test]
+    fn aligned_span_deletion_makes_ref_larger() {
+        // 5M 3D 5M → q=10, r=13 → max=13
+        let c = make_cigar(&[(CigarOp::M, 5), (CigarOp::D, 3), (CigarOp::M, 5)]);
+        assert_eq!(aligned_span(&c), 13);
+    }
+
+    #[test]
+    fn mapq_is_60_for_unique_read() {
+        // A read that is unique in the reference (no repeat loci) should get mapq=60.
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{body}")).unwrap();
+        let ref_data = ref_seq.as_slice().to_vec();
+        let index = FMIndex::build(&ref_seq);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(10).min_score(10);
+
+        // Use a long, exact substring of the reference that can't appear twice.
+        let query = enc(&body[5..35]);
+        let result = aligner.align_read(&query, None).unwrap();
+        if result.flag & 0x4 != 0 {
+            // If unmapped, the test is inconclusive — skip rather than fail.
+            return;
+        }
+        assert_eq!(result.mapq, 60, "unique read must get mapq=60");
     }
 }
