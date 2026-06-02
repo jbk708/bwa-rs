@@ -35,6 +35,11 @@ impl ParallelAligner {
         self
     }
 
+    /// Returns bwa's match score (`opt->a`), forwarded from the inner aligner.
+    pub fn match_score(&self) -> i32 {
+        self.inner.match_score()
+    }
+
     pub fn align_batch(&self, queries: &[&[u8]]) -> Vec<Result<AlignmentResult, BwaError>> {
         queries
             .par_iter()
