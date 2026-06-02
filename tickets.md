@@ -365,7 +365,7 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   unmapped-mate convention owned by **T-007**, not this ticket.
 
 ### T-018: Rigid seed anchoring prevents seed-relative shift (needs banded Smith-Waterman)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t018-banded-sw`)
 - **Severity:** high (largest remaining POS driver after T-005)
 - **Affected field(s):** POS, CIGAR.
 - **Symptom:** bwa-mem2 reports a read full-length and shifted 1–10 bp relative to
@@ -385,9 +385,25 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   tweak to the extension fixed the all-junk-tail subset but regressed the
   full-length subset (16 → 20), confirming the divergence is the rigid anchor, not
   the clip arithmetic.
-- **Resolution:** Replace seed-pinned outward extension with a single banded
-  Smith-Waterman over the read, centered on the seed/chain (bwa `ksw` style); related
-  to scoring defaults (T-014) and MAPQ (T-015).
+- **Resolution:** Stopped pinning the whole seed as forced `Eq`. `build_alignment`
+  now anchors only at the seed's *start* corner `(query_start, ref_start)` and folds
+  the seed region into the forward affine DP (`affine_extend_forward` over
+  `query[seed.query_start..]` from `seed.ref_start`), mirroring bwa's `ksw_extend`
+  model — the seed interior is now free to absorb a mismatch/gap so the banded DP can
+  shift the placement within the band instead of locking it to the seed. The forced
+  middle `Eq(seed.length)` push is removed; `ref_start` derives from the backward
+  extension's leftmost consumed base. Backward extension is unchanged. All 238 lib
+  tests pass plus two new ones (`test_exact_match_regression`,
+  `test_seed_interior_free_full_length_alignment`).
+  **Measured (chr1 / 300-uniq vs bwa-mem2, `bench/compare_t018.md`): POS 17 → 2
+  (0.3%), CIGAR 32 → 4 (0.7%), PNEXT 17 → 2.** No regressions; FLAG (8), TLEN (8),
+  MAPQ (2), SEQ/QUAL (3) are unchanged. The 2 residual POS diffs (reads
+  `100170`/`100124`) are **T-019** mate-rescue reads (bwa-rs leaves a mate unmapped,
+  `CIGAR *` / MAPQ 0), not seed anchoring. Of the 4 residual CIGAR diffs, 1 is that
+  same T-019 case and ~3 are ≤2 bp soft-clip-boundary shifts attributable to scoring
+  tie-breaks (**T-014**, `gap_open` 6 vs 5) and the not-yet-implemented joint
+  optimization across the seed corner — tracked as follow-ups along with MAPQ
+  (**T-015**).
 
 ### T-019: Mate rescue not implemented (unmapped mate via banded Smith-Waterman)
 - **Status:** OPEN (split out of T-007)

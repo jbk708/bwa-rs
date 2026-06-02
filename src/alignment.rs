@@ -122,37 +122,33 @@ impl Aligner {
             bw,
         );
 
+        // Anchor at the seed's start corner; the seed interior is free to absorb
+        // mismatches or gaps rather than being pinned as all-Eq.
         let forward = affine_extend_forward(
-            &query[seed.query_end()..],
+            &query[seed.query_start..],
             ref_seq,
-            seed.ref_end(),
+            seed.ref_start,
             &self.scoring,
             bw,
         );
 
         let leading_clip = seed.query_start - backward.query_end;
-        let trailing_clip = (query_len - seed.query_end()) - forward.query_end;
+        let trailing_clip = (query_len - seed.query_start) - forward.query_end;
 
         let mut cigar = Cigar::new();
 
         if leading_clip > 0 {
             cigar.push(CigarOp::S, leading_clip as u32);
         }
-        if backward.query_end > 0 {
-            cigar.extend(backward.cigar);
-        }
-
-        cigar.push(CigarOp::Eq, seed.length as u32);
-
-        if forward.query_end > 0 {
-            cigar.extend(forward.cigar);
-        }
+        cigar.extend(backward.cigar);
+        cigar.extend(forward.cigar);
         if trailing_clip > 0 {
             cigar.push(CigarOp::S, trailing_clip as u32);
         }
 
-        let ref_start = seed.ref_start.saturating_sub(backward.query_end);
-        let _ref_end = seed.ref_end() + forward.ref_end.saturating_sub(seed.ref_end());
+        // A backward extension reports `ref_end` as the leftmost reference base it
+        // consumed, which is the alignment's absolute start.
+        let ref_start = backward.ref_end;
 
         // nm / score / MD are computed in the coordinate space the alignment was
         // built in (the indexed sequence, which is 2N for a build_2n index).
@@ -802,7 +798,7 @@ mod tests {
 
         let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
         let cigar_str = ext.cigar.to_string();
-        assert!(cigar_str.len() > 0, "CIGAR should not be empty");
+        assert!(!cigar_str.is_empty(), "CIGAR should not be empty");
     }
 
     #[test]
@@ -813,15 +809,15 @@ mod tests {
 
         let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
         let cigar_str = ext.cigar.to_string();
-        assert!(cigar_str.len() > 0, "CIGAR should not be empty");
+        assert!(!cigar_str.is_empty(), "CIGAR should not be empty");
     }
 
     #[test]
     fn test_affine_gap_open_vs_extend() {
         let scoring = Scoring::default();
         assert!(scoring.gap_open > scoring.gap_extend);
-        let single_gap_cost = scoring.gap_open as i32;
-        let two_gap_cost = (scoring.gap_open + scoring.gap_extend) as i32;
+        let single_gap_cost = scoring.gap_open;
+        let two_gap_cost = scoring.gap_open + scoring.gap_extend;
         assert!(
             single_gap_cost < two_gap_cost,
             "Single gap should cost less than two separate gaps"
@@ -892,7 +888,7 @@ mod tests {
             "CIGAR should cover reference positions"
         );
         // Score can be negative if extension introduces mismatches
-        assert!(result.nm < u32::MAX as u32, "NM tag should be set");
+        assert!(result.nm < u32::MAX, "NM tag should be set");
     }
 
     #[test]
@@ -907,7 +903,7 @@ mod tests {
         let result = aligner.align_read(&query, None).unwrap();
 
         assert!(
-            result.cigar.to_string().len() > 0,
+            !result.cigar.to_string().is_empty(),
             "CIGAR should not be empty"
         );
     }
@@ -1145,6 +1141,53 @@ mod tests {
             "CIGAR should contain soft-clip ops for mismatching ends. CIGAR: {}",
             cigar_str
         );
+    }
+
+    fn full_length_test_aligner(fasta_body: &str) -> Aligner {
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{fasta_body}")).unwrap();
+        let ref_data = ref_seq.as_slice().to_vec();
+        let index = FMIndex::build(&ref_seq);
+        Aligner::new(index, ref_data).min_seed_len(4).min_score(0)
+    }
+
+    // An exact full-length match must still place at the right POS with NM=0 after
+    // the forward-DP anchor change.
+    #[test]
+    fn test_exact_match_regression() {
+        let aligner = full_length_test_aligner("ACGTACGT");
+        let query = vec![0u8, 1, 2, 3];
+        let result = aligner.align_read(&query, None).unwrap();
+
+        assert_eq!(result.flag & 0x4, 0, "should be mapped");
+        assert_eq!(result.nm, 0, "NM should be 0 for exact match");
+        assert_eq!(result.cigar.query_length(), 4, "full read must be aligned");
+        assert_eq!(result.cigar.reference_length(), 4);
+        assert_eq!(result.cigar.to_sam_string(), "4M");
+    }
+
+    // The read is the reference with its leading base removed, so the optimal
+    // placement runs full-length from POS 1 through the seed region — reachable
+    // only now that the seed is no longer pinned as exact matches.
+    #[test]
+    fn test_seed_interior_free_full_length_alignment() {
+        let aligner = full_length_test_aligner("AACGTAACGT");
+        let query = vec![0u8, 1, 2, 3, 0, 0, 1, 2, 3];
+        let result = aligner.align_read(&query, None).unwrap();
+
+        assert_eq!(result.flag & 0x4, 0, "should be mapped");
+        assert_eq!(
+            result.cigar.query_length(),
+            query.len(),
+            "all query bases must appear in CIGAR (no soft-clips); got {}",
+            result.cigar
+        );
+        assert_eq!(
+            result.position, 1,
+            "alignment should start at ref pos 1; got pos={} cigar={}",
+            result.position, result.cigar
+        );
+        assert_eq!(result.nm, 0, "NM must be 0 for an exact shifted alignment");
+        assert_eq!(result.cigar.to_sam_string(), "9M");
     }
 
     #[test]
