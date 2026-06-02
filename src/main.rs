@@ -88,6 +88,22 @@ struct ReadAln {
     result: AlignmentResult,
 }
 
+struct RawRead {
+    qname: String,
+    bases: Vec<u8>,
+    qual: String,
+}
+
+const BATCH_SIZE: usize = 65536;
+
+/// Align a batch of queries in parallel, surfacing the first error.
+fn align_all(
+    aligner: &ParallelAligner,
+    queries: &[&[u8]],
+) -> Result<Vec<AlignmentResult>, BwaError> {
+    aligner.align_batch(queries).into_iter().collect()
+}
+
 fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     if args.threads > 0 {
         ThreadPoolConfig::new()
@@ -126,41 +142,80 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     let iter = read1_reader.into_iter();
 
     if let Some(r2) = read2_reader {
-        // Two-phase: align all pairs and estimate the insert-size distribution first,
-        // then emit records so proper-pair flags reflect the full dataset.
+        // Two-phase: align every pair and estimate the insert-size distribution
+        // first, then emit records so proper-pair flags reflect the full dataset.
+        //
+        // The whole file must be buffered here (it cannot be chunked): is_proper_pair
+        // and pair_mapq below need the complete InsertSizeDistribution, which is only
+        // final once every pair has been aligned.
         let mut r2_iter = r2.into_iter();
-        let mut buf: Vec<(ReadAln, Option<ReadAln>)> = Vec::new();
         let mut dist = InsertSizeDistribution::new();
 
+        // Step 1: read all pairs into owned storage, preserving input order.
+        let mut raw_pairs: Vec<(RawRead, Option<RawRead>)> = Vec::new();
         for r in iter {
             let r1 = r?;
-            let r2_record = r2_iter.next().transpose()?;
             let seq1 = r1.to_sequence();
-            let result1 = aligner.align_single(&seq1.bases)?;
-            let read1 = ReadAln {
+            let read1 = RawRead {
                 qname: r1.qname,
                 bases: seq1.bases,
                 qual: r1.qual,
-                result: result1,
+            };
+            let read2 = r2_iter.next().transpose()?.map(|r2_rec| {
+                let seq2 = r2_rec.to_sequence();
+                RawRead {
+                    qname: r2_rec.qname,
+                    bases: seq2.bases,
+                    qual: r2_rec.qual,
+                }
+            });
+            raw_pairs.push((read1, read2));
+        }
+
+        // Step 2: flat ordered query list — read1 then read2 per pair. align_batch
+        // preserves input order, so results map 1-to-1 back onto the pairs.
+        let mut query_refs: Vec<&[u8]> = Vec::with_capacity(raw_pairs.len() * 2);
+        for (r1, r2) in &raw_pairs {
+            query_refs.push(r1.bases.as_slice());
+            if let Some(r2) = r2 {
+                query_refs.push(r2.bases.as_slice());
+            }
+        }
+
+        // Step 3: align the whole batch in parallel.
+        let mut result_iter = align_all(&aligner, &query_refs)?.into_iter();
+
+        // Step 4: walk results in order to build buf and accumulate dist.
+        let mut buf: Vec<(ReadAln, Option<ReadAln>)> = Vec::with_capacity(raw_pairs.len());
+        let mut next_result = || {
+            result_iter
+                .next()
+                .ok_or_else(|| BwaError::Alignment("batch result count mismatch".into()))
+        };
+        for (r1, r2) in raw_pairs {
+            let read1 = ReadAln {
+                qname: r1.qname,
+                bases: r1.bases,
+                qual: r1.qual,
+                result: next_result()?,
             };
 
-            let pair = if let Some(r2_rec) = r2_record {
-                let seq2 = r2_rec.to_sequence();
-                let result2 = aligner.align_single(&seq2.bases)?;
+            let read2 = if let Some(r2) = r2 {
+                let result2 = next_result()?;
                 if let Some(isize) = pair_insert_size(&read1.result, &result2) {
                     dist.add(isize);
                 }
                 Some(ReadAln {
-                    qname: r2_rec.qname,
-                    bases: seq2.bases,
-                    qual: r2_rec.qual,
+                    qname: r2.qname,
+                    bases: r2.bases,
+                    qual: r2.qual,
                     result: result2,
                 })
             } else {
                 None
             };
 
-            buf.push((read1, pair));
+            buf.push((read1, read2));
 
             count += 1;
             if count.is_multiple_of(10000) {
@@ -216,25 +271,43 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             }
         }
     } else {
+        // Chunked batch alignment keeps memory bounded while still parallelising
+        // within each chunk; align_batch preserves input order so output is identical.
+        let mut chunk: Vec<RawRead> = Vec::with_capacity(BATCH_SIZE);
+
+        let flush_chunk = |chunk: &mut Vec<RawRead>,
+                           output: &mut Box<dyn Write>,
+                           count: &mut u64|
+         -> Result<(), BwaError> {
+            let query_refs: Vec<&[u8]> = chunk.iter().map(|r| r.bases.as_slice()).collect();
+            let results = align_all(&aligner, &query_refs)?;
+            for (r, result) in chunk.iter().zip(results.iter()) {
+                write_sam_record(
+                    output, &reference, &r.qname, result, &r.bases, &r.qual, false,
+                )?;
+                *count += 1;
+                if count.is_multiple_of(10000) {
+                    eprintln!("Processed {} reads", count);
+                }
+            }
+            chunk.clear();
+            Ok(())
+        };
+
         for record in iter {
             let r1 = record?;
             let seq = r1.to_sequence();
-
-            let result = aligner.align_single(&seq.bases)?;
-            write_sam_record(
-                &mut output,
-                &reference,
-                &r1.qname,
-                &result,
-                &seq.bases,
-                &r1.qual,
-                false,
-            )?;
-            count += 1;
-
-            if count.is_multiple_of(10000) {
-                eprintln!("Processed {} reads", count);
+            chunk.push(RawRead {
+                qname: r1.qname,
+                bases: seq.bases,
+                qual: r1.qual,
+            });
+            if chunk.len() >= BATCH_SIZE {
+                flush_chunk(&mut chunk, &mut output, &mut count)?;
             }
+        }
+        if !chunk.is_empty() {
+            flush_chunk(&mut chunk, &mut output, &mut count)?;
         }
     }
 
