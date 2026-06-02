@@ -365,7 +365,8 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   unmapped-mate convention owned by **T-007**, not this ticket.
 
 ### T-018: Rigid seed anchoring prevents seed-relative shift (needs banded Smith-Waterman)
-- **Status:** OPEN
+- **Status:** INVESTIGATING (fix implemented on branch `t018-banded-sw`; chr1
+  POS re-verification against the human index still pending)
 - **Severity:** high (largest remaining POS driver after T-005)
 - **Affected field(s):** POS, CIGAR.
 - **Symptom:** bwa-mem2 reports a read full-length and shifted 1–10 bp relative to
@@ -385,9 +386,19 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   tweak to the extension fixed the all-junk-tail subset but regressed the
   full-length subset (16 → 20), confirming the divergence is the rigid anchor, not
   the clip arithmetic.
-- **Resolution:** Replace seed-pinned outward extension with a single banded
-  Smith-Waterman over the read, centered on the seed/chain (bwa `ksw` style); related
-  to scoring defaults (T-014) and MAPQ (T-015).
+- **Resolution:** Stopped pinning the whole seed as forced `Eq`. `build_alignment`
+  now anchors only at the seed's *start* corner `(query_start, ref_start)` and folds
+  the seed region into the forward affine DP (`affine_extend_forward` over
+  `query[seed.query_start..]` from `seed.ref_start`), mirroring bwa's `ksw_extend`
+  model — the seed interior is now free to absorb a mismatch/gap so the banded DP can
+  shift the placement within the band instead of locking it to the seed. The forced
+  middle `Eq(seed.length)` push is removed; `ref_start` derives from the backward
+  extension's leftmost consumed base. Backward extension is unchanged. All 238 lib
+  tests pass plus two new ones (`test_exact_match_regression`,
+  `test_seed_interior_free_full_length_alignment`). Remaining work toward full
+  banded-SW-over-the-whole-read parity (joint optimization across the seed corner,
+  scoring defaults T-014, MAPQ T-015) and the chr1 300-pair POS re-measurement are
+  follow-ups.
 
 ### T-019: Mate rescue not implemented (unmapped mate via banded Smith-Waterman)
 - **Status:** OPEN (split out of T-007)
