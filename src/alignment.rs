@@ -77,6 +77,11 @@ impl Aligner {
         self
     }
 
+    /// Returns bwa's match score (`opt->a`), used for scaled MAPQ formulas.
+    pub fn match_score(&self) -> i32 {
+        self.scoring.match_score
+    }
+
     pub fn align_read(
         &self,
         query: &[u8],
@@ -189,6 +194,7 @@ impl Aligner {
         );
 
         result.xs = sub;
+        result.frac_rep = frac_rep;
 
         Ok(result)
     }
@@ -457,6 +463,7 @@ impl Aligner {
             nm: 0,
             score: 0,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         }
     }

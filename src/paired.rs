@@ -5,6 +5,10 @@ use crate::types::{AlignmentResult, Orientation};
 /// Std-dev multiplier for the proper-pair insert-size window (bwa `mem_pestat` MAX_STDDEV).
 const MAX_STDDEV: f64 = 4.0;
 
+/// bwa `-U` default unpaired-read penalty subtracted from the unpaired score when
+/// choosing between paired and unpaired placements.
+const PEN_UNPAIRED: i32 = 17;
+
 /// Fully-assembled per-read mate fields for SAM output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MateFields {
@@ -99,6 +103,82 @@ impl PairedResult {
     pub fn opposite_strands(&self) -> bool {
         self.read1.reverse_strand != self.read2.reverse_strand
     }
+}
+
+/// bwa's raw_mapq: linear in score difference, scaled by the match score `a`.
+fn raw_mapq(diff: i32, a: i32) -> i32 {
+    (6.02 * diff as f64 / a as f64 + 0.499) as i32
+}
+
+/// Abramowitz & Stegun 7.1.26 rational approximation for erfc.
+///
+/// Max absolute error ~1.5e-7. Handles negative inputs via erfc(-x) = 2 - erfc(x).
+fn erfc(x: f64) -> f64 {
+    let sign = if x < 0.0 { -1.0_f64 } else { 1.0_f64 };
+    let x = x.abs();
+    let t = 1.0 / (1.0 + 0.3275911 * x);
+    let y = 1.0
+        - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t
+            + 0.254829592)
+            * t
+            * (-x * x).exp();
+    1.0 - sign * y
+}
+
+/// bwa's insert-size log-likelihood bonus (mem_pair). Zero when the
+/// distribution has no spread.
+fn insert_bonus(insert_size: u32, dist: &InsertSizeDistribution, a: i32) -> i32 {
+    if dist.std_dev <= 0.0 {
+        return 0;
+    }
+    let ns = (insert_size as f64 - dist.mean) / dist.std_dev;
+    let arg = ns.abs() * std::f64::consts::FRAC_1_SQRT_2;
+    let bonus = 0.721 * (2.0 * erfc(arg)).ln() * a as f64 + 0.499;
+    bonus as i32
+}
+
+/// Port of bwa-mem2 `mem_sam_pe`'s paired-MAPQ recalculation for a pair with one
+/// candidate placement per end. Returns the adjusted (read1_mapq, read2_mapq).
+/// `match_score` is bwa's `opt->a`. Inputs come from each mate's AlignmentResult
+/// (score, mapq as the SE estimate, frac_rep). The pair must be FR-concordant
+/// (call only when is_proper_pair && both mapped); insert size is taken from
+/// fr_insert_size.
+///
+/// bwa's actual gate is the pairing score `o > 0`; with both mates filtered above
+/// the `-T` threshold a proper FR pair always clears it, so callers gate on
+/// [`is_proper_pair`]. With a single candidate per end there are no alternative
+/// pairings, so the suboptimal-pairing count `n_sub` is 0 and bwa's
+/// `4.343 * ln(n_sub + 1)` multi-hit penalty drops out.
+pub fn pair_mapq(
+    read1: &AlignmentResult,
+    read2: &AlignmentResult,
+    dist: &InsertSizeDistribution,
+    match_score: i32,
+) -> (u8, u8) {
+    let insert_size = match fr_insert_size(read1, read2) {
+        Some(s) => s,
+        None => return (read1.mapq, read2.mapq),
+    };
+
+    let paired_score = read1.score + read2.score;
+    let o = paired_score + insert_bonus(insert_size, dist, match_score);
+    let subo = (paired_score - PEN_UNPAIRED).max(0);
+
+    let mut q_pe = raw_mapq(o - subo, match_score).clamp(0, 60);
+    q_pe = (q_pe as f64 * (1.0 - 0.5 * (read1.frac_rep + read2.frac_rep) as f64) + 0.499) as i32;
+
+    let adjust = |q_se: i32| -> u8 {
+        let q = if q_se > q_pe {
+            q_se
+        } else if q_pe < q_se + 40 {
+            q_pe
+        } else {
+            q_se + 40
+        };
+        q as u8
+    };
+
+    (adjust(read1.mapq as i32), adjust(read2.mapq as i32))
 }
 
 pub fn pair_reads(
@@ -339,6 +419,100 @@ mod tests {
         let mut r = AlignmentResult::new(position, cigar);
         r.reverse_strand = reverse;
         r
+    }
+
+    fn scored_read(
+        position: usize,
+        ref_len: u32,
+        reverse: bool,
+        score: i32,
+        mapq: u8,
+        frac_rep: f32,
+    ) -> AlignmentResult {
+        let mut r = mapped_read(position, ref_len, reverse);
+        r.score = score;
+        r.mapq = mapq;
+        r.frac_rep = frac_rep;
+        r
+    }
+
+    // --- erfc ---
+
+    #[test]
+    fn erfc_matches_known_values() {
+        assert!((erfc(0.0) - 1.0).abs() < 1e-6, "erfc(0) ≈ 1");
+        assert!((erfc(1.0) - 0.1573).abs() < 1e-3, "erfc(1) ≈ 0.1573");
+        assert!((erfc(-1.0) - 1.8427).abs() < 1e-3, "erfc(-1) ≈ 1.8427");
+    }
+
+    // --- pair_mapq ---
+
+    #[test]
+    fn pair_mapq_unique_proper_pair_stays_60() {
+        // Near-mean insert + high scores → q_pe >> 60, so both SE-60 mates stay 60.
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        let r1 = scored_read(100, 150, false, 150, 60, 0.0);
+        let r2 = scored_read(350, 150, true, 150, 60, 0.0);
+
+        let (m1, m2) = pair_mapq(&r1, &r2, &dist, 1);
+        assert_eq!(m1, 60, "high unique pair: read1 mapq stays 60");
+        assert_eq!(m2, 60, "high unique pair: read2 mapq stays 60");
+    }
+
+    #[test]
+    fn pair_mapq_low_se_bumped_toward_pe() {
+        // A high-scoring pair lifts a mate whose SE mapq is low via min(q_pe, se+40).
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        let r1 = scored_read(100, 150, false, 200, 60, 0.0);
+        let r2 = scored_read(350, 150, true, 200, 27, 0.0);
+
+        let (_, m2) = pair_mapq(&r1, &r2, &dist, 1);
+        assert!(
+            m2 > 27,
+            "paired evidence should raise low-SE mate: got {m2}"
+        );
+    }
+
+    #[test]
+    fn pair_mapq_off_mean_insert_lowers_qpe() {
+        // Off-mean insert → negative insert bonus → lower q_pe than the near-mean pair.
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+
+        let r1_near = scored_read(100, 150, false, 100, 60, 0.0);
+        let r2_near = scored_read(250, 150, true, 100, 60, 0.0);
+        let r1_far = scored_read(100, 150, false, 100, 60, 0.0);
+        let r2_far = scored_read(950, 150, true, 100, 60, 0.0);
+
+        let (m1_near, _) = pair_mapq(&r1_near, &r2_near, &dist, 1);
+        let (m1_far, _) = pair_mapq(&r1_far, &r2_far, &dist, 1);
+
+        assert!(
+            m1_far <= m1_near,
+            "off-mean insert should not raise mapq vs near-mean: far={m1_far}, near={m1_near}"
+        );
+    }
+
+    #[test]
+    fn pair_mapq_frac_rep_downweights() {
+        // With a low SE mapq the paired q_pe drives the result, so high frac_rep lowers it.
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        let make_pair = |frac: f32| {
+            (
+                scored_read(100, 150, false, 200, 5, frac),
+                scored_read(250, 150, true, 200, 5, frac),
+            )
+        };
+
+        let (r1_clean, r2_clean) = make_pair(0.0);
+        let (r1_rep, r2_rep) = make_pair(0.8);
+
+        let (m1_clean, _) = pair_mapq(&r1_clean, &r2_clean, &dist, 1);
+        let (m1_rep, _) = pair_mapq(&r1_rep, &r2_rep, &dist, 1);
+
+        assert!(
+            m1_rep < m1_clean,
+            "high frac_rep should lower mapq: rep={m1_rep}, clean={m1_clean}"
+        );
     }
 
     fn unmapped_read() -> AlignmentResult {

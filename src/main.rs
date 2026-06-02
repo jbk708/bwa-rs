@@ -4,7 +4,9 @@ use clap::Parser;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
-use bwa_mem::paired::{is_proper_pair, mate_fields, pair_insert_size, InsertSizeDistribution};
+use bwa_mem::paired::{
+    is_proper_pair, mate_fields, pair_insert_size, pair_mapq, InsertSizeDistribution,
+};
 use bwa_mem::sam::{oriented_seq_qual, write_paired_record as sam_write_paired};
 use bwa_mem::types::AlignmentResult;
 use bwa_mem::{
@@ -180,6 +182,12 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
                     }
                 }
                 let proper = is_proper_pair(&read1.result, &read2.result, &dist);
+                if proper {
+                    let (m1, m2) =
+                        pair_mapq(&read1.result, &read2.result, &dist, aligner.match_score());
+                    read1.result.mapq = m1;
+                    read2.result.mapq = m2;
+                }
                 let mf1 = mate_fields(&read1.result, &read2.result, true, proper);
                 let mf2 = mate_fields(&read2.result, &read1.result, false, proper);
                 let mut emit = |r: &ReadAln, mf: &_| {

@@ -583,20 +583,41 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   (partial secondary set) — same dependency on T-024.
 
 ### T-022: Paired-end MAPQ recalculation (`mem_sam_pe`) not implemented
-- **Status:** OPEN
+- **Status:** FIXED (branch `t022-pe-mapq`) — exact rescued-read values gated on T-024/T-018.
 - **Severity:** low
 - **Affected field(s):** MAPQ (paired / rescued reads).
 - **Symptom:** After T-015 the two chr1 mate-rescue reads report MAPQ `27`/`33` where
   bwa-mem2 reports `30`/`59`. bwa derives the single-end MAPQ with
   `mem_approx_mapq_se` (now ported) and then *recomputes* a paired MAPQ in
   `mem_sam_pe` from the pairing score `o`/`subo` (combining both mates and the
-  insert-size likelihood). bwa-rs applies only the SE formula per mate.
-- **Suspected cause:** No PE pairing-score MAPQ pass; `src/main.rs` emits each mate's
+  insert-size likelihood). bwa-rs applied only the SE formula per mate.
+- **Cause:** No PE pairing-score MAPQ pass; `src/main.rs` emitted each mate's
   SE MAPQ unchanged. Part of the residual is also the differing CIGAR core
   (T-014/T-018), which lowers the SE score feeding the formula.
-- **Resolution:** Port `mem_sam_pe`'s paired MAPQ adjustment (pairing score vs
-  suboptimal pairing score, capped by the SE MAPQ). Depends on a faithful pairing
-  score, which overlaps with **T-021**.
+- **Resolution:** Ported `mem_sam_pe`'s paired-MAPQ recalculation as pure helpers in
+  `src/paired.rs`: `raw_mapq` (bwa `raw_mapq`), a from-scratch `erfc` (Abramowitz &
+  Stegun 7.1.26, no new deps), `insert_bonus` (bwa `mem_pair`'s insert-size
+  log-likelihood term, `.721·ln(2·erfc(|ns|/√2))·a`), and `pair_mapq` which assembles
+  the pairing score `o = score1 + score2 + insert_bonus`, `subo = max(0, score1 +
+  score2 − PEN_UNPAIRED)` (PEN_UNPAIRED = 17), `q_pe = raw_mapq(o−subo, a)` clamped and
+  down-weighted by `(1 − ½(frac_rep1+frac_rep2))`, then caps each mate's SE MAPQ via
+  `q_se > q_pe ? q_se : min(q_pe, q_se+40)`. `frac_rep` is now persisted on
+  `AlignmentResult` (mirrors `xs`; set in `align_read`, 0 for rescued/unmapped); added
+  `match_score()` accessors on `Aligner`/`ParallelAligner`. The paired emit loop in
+  `src/main.rs` recomputes both mates' MAPQ via `pair_mapq` when the pair is proper.
+- **Measured (chr1 / 300-uniq vs bwa-mem2, `bench/compare_t022{,_summary}.md`):** **no
+  regressions** — per-field divergence byte-identical to T-021 (POS 0, FLAG 4, MAPQ 2,
+  CIGAR 4, …); the 592 identically-placed reads stay **100% MAPQ-exact**. The two
+  mate-rescue reads pick up pairing evidence: `100170` 33 → **60** (bwa 59, off-by-1),
+  `100124` 27 → **60** (bwa 30, overshoots).
+- **Residual (other root cause — follow-up):** `100124` overshoots because bwa's `q_pe`
+  is low there (`o−subo ≈ 5`) — bwa finds a *competing* pairing at the rescued read's
+  repetitive secondary locus, raising `subo`. bwa-rs keeps a single placement per end
+  (no `mem_alnreg_v` candidate array), so `subo = score_un` and `q_pe ≈ 60` for any
+  near-mean concordant pair. Reconstructing the competing pairing needs the
+  candidate-region pairing score — **T-024** (which also feeds XS). The rescued-read
+  CIGAR core (`44S37M1I2M1D58M9S` vs bwa `44S98M9S`) is **T-018/T-014** and lowers the
+  score feeding the formula.
 
 ### T-023: Repetitive-read seeding time/memory blow-up
 - **Status:** OPEN

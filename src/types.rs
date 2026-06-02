@@ -284,6 +284,9 @@ pub struct AlignmentResult {
     /// Best suboptimal alignment score (bwa XS:i tag). Zero when no secondary
     /// hit qualifies (i.e. the read is uniquely placed).
     pub xs: i32,
+    /// Fraction of the read covered by repetitive seeds; feeds bwa's paired-MAPQ
+    /// down-weighting (mem_sam_pe frac_rep averaging term).
+    pub frac_rep: f32,
     pub md_tag: Option<String>,
 }
 
@@ -298,6 +301,7 @@ impl AlignmentResult {
             nm: 0,
             score: 0,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         }
     }
@@ -451,6 +455,7 @@ mod tests {
             nm: 0,
             score: 5,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         };
 
@@ -474,6 +479,7 @@ mod tests {
             nm: 2,
             score: 3,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         };
 
@@ -498,6 +504,7 @@ mod tests {
             nm: 2,
             score: 4,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         };
 
@@ -526,6 +533,7 @@ mod tests {
             nm: 3,
             score: 6,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         };
 
@@ -555,6 +563,7 @@ mod tests {
             nm: 0,
             score: 6,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         };
 
@@ -578,6 +587,7 @@ mod tests {
             nm: 3,
             score: -12,
             xs: 0,
+            frac_rep: 0.0,
             md_tag: None,
         };
 
