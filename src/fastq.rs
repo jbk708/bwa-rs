@@ -25,6 +25,17 @@ impl FASTQReader<BufReader<std::fs::File>> {
     }
 }
 
+fn trim_qname(name: &str) -> &str {
+    let name = name.split([' ', '\t']).next().unwrap_or(name);
+    let bytes = name.as_bytes();
+    let len = bytes.len();
+    if len >= 2 && bytes[len - 2] == b'/' && bytes[len - 1].is_ascii_digit() {
+        &name[..len - 2]
+    } else {
+        name
+    }
+}
+
 impl<R: Read> Iterator for FASTQReader<R> {
     type Item = Result<FastqRecord, BwaError>;
 
@@ -43,7 +54,7 @@ impl<R: Read> Iterator for FASTQReader<R> {
                 name
             ))));
         }
-        let qname = name.trim_start_matches('@').to_string();
+        let qname = trim_qname(name.trim_start_matches('@')).to_string();
 
         self.buffer.clear();
         if let Err(e) = self.reader.read_line(&mut self.buffer) {
@@ -123,6 +134,54 @@ mod tests {
         let record = records[0].as_ref().unwrap();
         assert_eq!(record.qname, "read1");
         assert_eq!(record.seq, "ACGT");
+    }
+
+    fn parse_qname(data: &[u8]) -> String {
+        let reader = FASTQReader::new(Cursor::new(data));
+        let records: Vec<_> = reader.collect();
+        records[0].as_ref().unwrap().qname.clone()
+    }
+
+    #[test]
+    fn test_qname_whitespace_space() {
+        let data = b"@SRR7733443.100000 100000 length=151\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "SRR7733443.100000");
+    }
+
+    #[test]
+    fn test_qname_whitespace_tab() {
+        let data = b"@read1\tcomment\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "read1");
+    }
+
+    #[test]
+    fn test_qname_strip_slash1() {
+        let data = b"@read1/1\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "read1");
+    }
+
+    #[test]
+    fn test_qname_strip_slash2() {
+        let data = b"@read1/2\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "read1");
+    }
+
+    #[test]
+    fn test_qname_strip_slash_digit() {
+        let data = b"@read1/3\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "read1");
+    }
+
+    #[test]
+    fn test_qname_noop() {
+        let data = b"@read1\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "read1");
+    }
+
+    #[test]
+    fn test_qname_whitespace_then_slash1_in_desc() {
+        let data = b"@read1 extra/1\nACGT\n+\nIIII\n";
+        assert_eq!(parse_qname(data), "read1");
     }
 
     #[test]
