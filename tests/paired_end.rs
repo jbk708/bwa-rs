@@ -148,8 +148,11 @@ fn write_paired_record_output_format() {
     let mf2 = mate_fields(&r2, &r1, false, proper);
 
     let reference = single_ref();
+    // r1 is forward: bases [0,1,2,3]=ACGT, qual "IIII" → SEQ="ACGT", QUAL="IIII"
+    let bases = &[0u8, 1, 2, 3];
+    let qual = "IIII";
     let mut buf1: Vec<u8> = Vec::new();
-    write_paired_record(&mut buf1, &reference, "read1", &r1, &mf1).unwrap();
+    write_paired_record(&mut buf1, &reference, "read1", &r1, bases, qual, &mf1).unwrap();
     let line1 = String::from_utf8(buf1).unwrap();
     let f1 = parse_sam_fields(line1.trim_end_matches('\n'));
 
@@ -163,11 +166,13 @@ fn write_paired_record_output_format() {
     assert_eq!(f1[7], "301", "PNEXT = r2 position+1");
     let tlen1: i64 = f1[8].parse().unwrap();
     assert_ne!(tlen1, 0, "TLEN nonzero");
-    assert_eq!(f1[9], "*", "SEQ stays *");
-    assert_eq!(f1[10], "*", "QUAL stays *");
+    // r1 forward: SEQ="ACGT", QUAL="IIII"
+    assert_eq!(f1[9], "ACGT", "SEQ oriented forward");
+    assert_eq!(f1[10], "IIII", "QUAL oriented forward");
 
+    // r2 is reverse: reverse_complement([0,1,2,3])=[3,2,1,0]="TGCA", qual reversed "IIII"="IIII"
     let mut buf2: Vec<u8> = Vec::new();
-    write_paired_record(&mut buf2, &reference, "read1", &r2, &mf2).unwrap();
+    write_paired_record(&mut buf2, &reference, "read1", &r2, bases, qual, &mf2).unwrap();
     let line2 = String::from_utf8(buf2).unwrap();
     let f2 = parse_sam_fields(line2.trim_end_matches('\n'));
 
@@ -190,7 +195,17 @@ fn write_paired_record_unmapped_mate_convention() {
 
     let reference = single_ref();
     let mut buf: Vec<u8> = Vec::new();
-    write_paired_record(&mut buf, &reference, "read2", &r2, &mf2).unwrap();
+    // r2 is unmapped (reverse_strand=false): forward → SEQ="ACGT", QUAL="IIII"
+    write_paired_record(
+        &mut buf,
+        &reference,
+        "read2",
+        &r2,
+        &[0u8, 1, 2, 3],
+        "IIII",
+        &mf2,
+    )
+    .unwrap();
     let line = String::from_utf8(buf).unwrap();
     let f = parse_sam_fields(line.trim_end_matches('\n'));
 

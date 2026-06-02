@@ -164,6 +164,29 @@ impl Cigar {
         self.ops.extend(other.ops);
     }
 
+    /// Renders the CIGAR in bwa/SAM `M` form: `=`, `X`, and `M` operators are all
+    /// emitted as `M` with adjacent runs merged; all other operators are unchanged.
+    pub fn to_sam_string(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let mut m_run = 0u32;
+        for &(op, len) in &self.ops {
+            if matches!(op, CigarOp::M | CigarOp::Eq | CigarOp::X) {
+                m_run += len;
+            } else {
+                if m_run > 0 {
+                    let _ = write!(out, "{}M", m_run);
+                    m_run = 0;
+                }
+                let _ = write!(out, "{}{}", len, char_from_op(op));
+            }
+        }
+        if m_run > 0 {
+            let _ = write!(out, "{}M", m_run);
+        }
+        out
+    }
+
     pub fn compress(ops: Vec<CigarOp>) -> Cigar {
         let mut cigar = Cigar::new();
         if ops.is_empty() {
@@ -348,6 +371,54 @@ impl AlignmentResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_to_sam_string_all_eq_x() {
+        // [Eq 43, X 7, Eq 1] → "51M"
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 43);
+        cigar.push(CigarOp::X, 7);
+        cigar.push(CigarOp::Eq, 1);
+        assert_eq!(cigar.to_sam_string(), "51M");
+    }
+
+    #[test]
+    fn test_to_sam_string_soft_clip_prefix() {
+        // [S 4, Eq 147] → "4S147M"
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::S, 4);
+        cigar.push(CigarOp::Eq, 147);
+        assert_eq!(cigar.to_sam_string(), "4S147M");
+    }
+
+    #[test]
+    fn test_to_sam_string_soft_clip_suffix() {
+        // [Eq 80, X 1, Eq 17, S 53] → "98M53S"
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 80);
+        cigar.push(CigarOp::X, 1);
+        cigar.push(CigarOp::Eq, 17);
+        cigar.push(CigarOp::S, 53);
+        assert_eq!(cigar.to_sam_string(), "98M53S");
+    }
+
+    #[test]
+    fn test_to_sam_string_m_insertion_eq() {
+        // [M 10, I 2, Eq 5] → "10M2I5M"
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, 10);
+        cigar.push(CigarOp::I, 2);
+        cigar.push(CigarOp::Eq, 5);
+        assert_eq!(cigar.to_sam_string(), "10M2I5M");
+    }
+
+    #[test]
+    fn test_to_sam_string_pure_eq() {
+        // [Eq 151] → "151M"
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::Eq, 151);
+        assert_eq!(cigar.to_sam_string(), "151M");
+    }
 
     #[test]
     fn test_sequence_encoding() {

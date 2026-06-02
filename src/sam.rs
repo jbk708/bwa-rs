@@ -1,7 +1,7 @@
 //! SAM format output generation.
 
 use crate::paired::MateFields;
-use crate::reference::Reference;
+use crate::reference::{reverse_complement, Reference};
 use crate::types::{AlignmentResult, Sequence};
 use std::fmt;
 use std::io::{self, Write};
@@ -206,6 +206,27 @@ impl SAMWriter {
     }
 }
 
+/// Returns the SAM SEQ and QUAL for a read oriented to the reference strand.
+/// On the reverse strand SEQ is reverse-complemented and QUAL reversed. An empty
+/// `qual` yields `*` (the SAM "no quality" sentinel).
+pub fn oriented_seq_qual(bases: &[u8], qual: &str, reverse: bool) -> (String, String) {
+    let seq = if bases.is_empty() {
+        "*".to_string()
+    } else if reverse {
+        Reference::decode_sequence(&reverse_complement(bases))
+    } else {
+        Reference::decode_sequence(bases)
+    };
+    let qual_out = if qual.is_empty() {
+        "*".to_string()
+    } else if reverse {
+        qual.chars().rev().collect()
+    } else {
+        qual.to_string()
+    };
+    (seq, qual_out)
+}
+
 /// Writes a single paired-end alignment record to any `Write` sink.
 ///
 /// Uses `MateFields` (pre-assembled by [`crate::paired::mate_fields`]) for all flag/rnext/pnext/tlen
@@ -217,6 +238,8 @@ pub fn write_paired_record<W: Write>(
     reference: &Reference,
     qname: &str,
     result: &AlignmentResult,
+    bases: &[u8],
+    qual: &str,
     mf: &MateFields,
 ) -> io::Result<()> {
     let mapped = !result.is_unmapped();
@@ -251,15 +274,17 @@ pub fn write_paired_record<W: Write>(
     };
 
     let cigar = if mapped {
-        result.cigar.to_string()
+        result.cigar.to_sam_string()
     } else {
         "*".into()
     };
 
+    let (seq, qual_out) = oriented_seq_qual(bases, qual, result.reverse_strand);
+
     writeln!(
         out,
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t*\t*",
-        qname, mf.flag, rname, pos, mapq, cigar, rnext, pnext, tlen
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        qname, mf.flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seq, qual_out
     )
 }
 
@@ -268,6 +293,37 @@ mod tests {
     use super::*;
     use crate::paired::MateFields;
     use crate::types::{Cigar, CigarOp};
+
+    #[test]
+    fn oriented_seq_qual_forward() {
+        // bases [0,1,2,2] = ACGG, qual "ABCD" → forward: seq "ACGG", qual "ABCD"
+        let (seq, qual) = oriented_seq_qual(&[0u8, 1, 2, 2], "ABCD", false);
+        assert_eq!(seq, "ACGG");
+        assert_eq!(qual, "ABCD");
+    }
+
+    #[test]
+    fn oriented_seq_qual_reverse() {
+        // bases [0,1,2,2] = ACGG, reverse_complement = CCGT → seq "CCGT", qual reversed "DCBA"
+        let (seq, qual) = oriented_seq_qual(&[0u8, 1, 2, 2], "ABCD", true);
+        assert_eq!(seq, "CCGT");
+        assert_eq!(qual, "DCBA");
+    }
+
+    #[test]
+    fn oriented_seq_qual_empty_qual() {
+        // Empty qual string → QUAL = "*"
+        let (seq, qual) = oriented_seq_qual(&[0u8, 1, 2, 3], "", false);
+        assert_eq!(seq, "ACGT");
+        assert_eq!(qual, "*");
+    }
+
+    #[test]
+    fn oriented_seq_qual_empty_bases() {
+        // Empty bases → SEQ = "*"
+        let (seq, _qual) = oriented_seq_qual(&[], "ABCD", false);
+        assert_eq!(seq, "*");
+    }
 
     #[test]
     fn write_paired_record_resolves_contig_name_and_pos() {
@@ -290,7 +346,16 @@ mod tests {
         };
 
         let mut buf: Vec<u8> = Vec::new();
-        write_paired_record(&mut buf, &reference, "read1", &result, &mf).unwrap();
+        write_paired_record(
+            &mut buf,
+            &reference,
+            "read1",
+            &result,
+            &[0u8, 1, 2, 3],
+            "IIII",
+            &mf,
+        )
+        .unwrap();
         let line = String::from_utf8(buf).unwrap();
 
         let fields: Vec<&str> = line.trim().split('\t').collect();

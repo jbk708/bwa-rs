@@ -5,7 +5,7 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use bwa_mem::paired::{is_proper_pair, mate_fields, pair_insert_size, InsertSizeDistribution};
-use bwa_mem::sam::write_paired_record as sam_write_paired;
+use bwa_mem::sam::{oriented_seq_qual, write_paired_record as sam_write_paired};
 use bwa_mem::types::AlignmentResult;
 use bwa_mem::{
     fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, Reference, ThreadPoolConfig,
@@ -79,6 +79,13 @@ fn main() -> Result<(), BwaError> {
     }
 }
 
+struct ReadAln {
+    qname: String,
+    bases: Vec<u8>,
+    qual: String,
+    result: AlignmentResult,
+}
+
 fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     if args.threads > 0 {
         ThreadPoolConfig::new()
@@ -119,8 +126,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         // Two-phase: align all pairs and estimate the insert-size distribution first,
         // then emit records so proper-pair flags reflect the full dataset.
         let mut r2_iter = r2.into_iter();
-        type PairBuf = Vec<(String, AlignmentResult, Option<(String, AlignmentResult)>)>;
-        let mut buf: PairBuf = Vec::new();
+        let mut buf: Vec<(ReadAln, Option<ReadAln>)> = Vec::new();
         let mut dist = InsertSizeDistribution::new();
 
         for r in iter {
@@ -128,19 +134,30 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             let r2_record = r2_iter.next().transpose()?;
             let seq1 = r1.to_sequence();
             let result1 = aligner.align_single(&seq1.bases)?;
+            let read1 = ReadAln {
+                qname: r1.qname,
+                bases: seq1.bases,
+                qual: r1.qual,
+                result: result1,
+            };
 
             let pair = if let Some(r2_rec) = r2_record {
                 let seq2 = r2_rec.to_sequence();
                 let result2 = aligner.align_single(&seq2.bases)?;
-                if let Some(isize) = pair_insert_size(&result1, &result2) {
+                if let Some(isize) = pair_insert_size(&read1.result, &result2) {
                     dist.add(isize);
                 }
-                Some((r2_rec.qname, result2))
+                Some(ReadAln {
+                    qname: r2_rec.qname,
+                    bases: seq2.bases,
+                    qual: r2_rec.qual,
+                    result: result2,
+                })
             } else {
                 None
             };
 
-            buf.push((r1.qname, result1, pair));
+            buf.push((read1, pair));
 
             count += 1;
             if count.is_multiple_of(10000) {
@@ -148,15 +165,34 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             }
         }
 
-        for (qname1, result1, pair) in buf {
-            if let Some((qname2, result2)) = pair {
-                let proper = is_proper_pair(&result1, &result2, &dist);
-                let mf1 = mate_fields(&result1, &result2, true, proper);
-                let mf2 = mate_fields(&result2, &result1, false, proper);
-                sam_write_paired(&mut output, &reference, &qname1, &result1, &mf1)?;
-                sam_write_paired(&mut output, &reference, &qname2, &result2, &mf2)?;
+        for (read1, pair) in buf {
+            if let Some(read2) = pair {
+                let proper = is_proper_pair(&read1.result, &read2.result, &dist);
+                let mf1 = mate_fields(&read1.result, &read2.result, true, proper);
+                let mf2 = mate_fields(&read2.result, &read1.result, false, proper);
+                let mut emit = |r: &ReadAln, mf: &_| {
+                    sam_write_paired(
+                        &mut output,
+                        &reference,
+                        &r.qname,
+                        &r.result,
+                        &r.bases,
+                        &r.qual,
+                        mf,
+                    )
+                };
+                emit(&read1, &mf1)?;
+                emit(&read2, &mf2)?;
             } else {
-                write_sam_record(&mut output, &reference, &qname1, &result1, false)?;
+                write_sam_record(
+                    &mut output,
+                    &reference,
+                    &read1.qname,
+                    &read1.result,
+                    &read1.bases,
+                    &read1.qual,
+                    false,
+                )?;
             }
         }
     } else {
@@ -165,7 +201,15 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             let seq = r1.to_sequence();
 
             let result = aligner.align_single(&seq.bases)?;
-            write_sam_record(&mut output, &reference, &r1.qname, &result, false)?;
+            write_sam_record(
+                &mut output,
+                &reference,
+                &r1.qname,
+                &result,
+                &seq.bases,
+                &r1.qual,
+                false,
+            )?;
             count += 1;
 
             if count.is_multiple_of(10000) {
@@ -198,6 +242,8 @@ fn write_sam_record(
     reference: &Reference,
     qname: &str,
     result: &AlignmentResult,
+    bases: &[u8],
+    qual: &str,
     is_mate: bool,
 ) -> Result<(), BwaError> {
     let mapped = !result.cigar.ops.is_empty() && !result.is_unmapped();
@@ -214,18 +260,17 @@ fn write_sam_record(
         ("*", 0)
     };
     let mapq = if mapped { result.mapq } else { 0 };
-    let cigar_str = result.cigar.to_string();
+    let cigar_str = result.cigar.to_sam_string();
     let cigar = if mapped { cigar_str.as_str() } else { "*" };
     let rnext = "*";
     let pnext: i64 = 0;
     let tlen: i64 = 0;
-    let seq = "*";
-    let qual = "*";
+    let (seq, qual_out) = oriented_seq_qual(bases, qual, result.reverse_strand);
 
     writeln!(
         output,
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-        qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seq, qual
+        qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seq, qual_out
     )?;
     Ok(())
 }
