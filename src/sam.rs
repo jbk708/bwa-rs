@@ -295,6 +295,7 @@ pub fn write_paired_record<W: Write>(
             write!(out, "\tMC:Z:{}", mc)?;
         }
         write!(out, "\tAS:i:{}", result.score)?;
+        write!(out, "\tXS:i:{}", result.xs)?;
     }
     writeln!(out)
 }
@@ -479,7 +480,7 @@ mod tests {
         assert!(line.contains("\tMD:Z:50A49\t"), "MD tag present");
         assert!(line.contains("\tMC:Z:100M\t"), "MC tag present");
         assert!(line.contains("\tAS:i:151"), "AS tag present");
-        assert!(!line.contains("XS:"), "XS must not be emitted");
+        assert!(line.contains("\tXS:i:0"), "XS:i:0 emitted on mapped record");
 
         let nm_pos = line.find("\tNM:i:").unwrap();
         let md_pos = line.find("\tMD:Z:").unwrap();
@@ -488,6 +489,49 @@ mod tests {
         assert!(nm_pos < md_pos, "NM before MD");
         assert!(md_pos < mc_pos, "MD before MC");
         assert!(mc_pos < as_pos, "MC before AS");
+    }
+
+    #[test]
+    fn write_paired_record_emits_xs_after_as_when_xs_nonzero() {
+        use crate::reference::Reference;
+        use crate::types::CigarOp;
+
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
+
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, 100);
+        let mut r1 = crate::types::AlignmentResult::new(0, cigar.clone());
+        r1.nm = 0;
+        r1.score = 100;
+        r1.xs = 80;
+        r1.md_tag = Some("MD:Z:100".to_string());
+
+        let mf = MateFields {
+            flag: 0x1 | 0x20 | 0x40,
+            rnext: "=",
+            pnext: 201,
+            tlen: 300,
+            placed_pos: None,
+            mc: Some("100M".to_string()),
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_paired_record(
+            &mut buf,
+            &reference,
+            "repeat_read",
+            &r1,
+            &[0u8; 100],
+            &"I".repeat(100),
+            &mf,
+        )
+        .unwrap();
+        let line = String::from_utf8(buf).unwrap();
+
+        assert!(line.contains("\tXS:i:80"), "XS tag emitted when xs > 0");
+        let as_pos = line.find("\tAS:i:").unwrap();
+        let xs_pos = line.find("\tXS:i:").unwrap();
+        assert!(as_pos < xs_pos, "XS must appear after AS");
     }
 
     #[test]

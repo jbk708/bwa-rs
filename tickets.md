@@ -536,7 +536,7 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   reflects bwa-rs's own CIGAR. Core fields and NM/MC/AS unchanged; no regression.
 
 ### T-021: Suboptimal-hit detection in seeding (drives MAPQ `sub` and XS)
-- **Status:** OPEN
+- **Status:** FIXED (machinery + `frac_rep` + XS; bulk MAPQ residual reassigned to T-024) — branch `t021-seed-secondary`
 - **Severity:** medium
 - **Affected field(s):** MAPQ, XS (optional tag).
 - **Symptom:** Surfaced by T-015. On reads where the primary placement matches
@@ -552,10 +552,35 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   bwa's seeding (re-seeding of long MEMs, seed dropping, chain de-overlap), so a
   repetitive fragment that bwa maps to ≥2 loci yields a single bwa-rs chain. T-015's
   `align_read` then computes `sub` over an incomplete candidate set.
-- **Resolution:** Port bwa's secondary-region machinery so `sub`/`sub_n` reflect the
-  true second-best alignment (re-seeding, `mem_mark_primary_se` clustering); then emit
-  XS from it (closes the T-011 XS deferral). Unblocks the bulk of the T-015 MAPQ
-  residual.
+- **Resolution:** Ported four pieces of bwa's secondary-region machinery:
+  (1) **re-seeding** — a rare long SMEM (occ ≤ `SPLIT_WIDTH = 10`, len ≥
+  `SPLIT_FACTOR×min_seed_len`) is split at its midpoint and re-seeded for a *more
+  frequent* sub-seed (`longest_match_min_occ`, bwa `min_intv = parent_occ + 1`) so a
+  repeated core surfaces the repeat's loci (`src/mem_finder.rs`);
+  (2) an **occurrence cap** `DEFAULT_MAX_OCC = 500` (`FMIndex::find_all_capped`) —
+  over-frequent SMEMs are not enumerated for chaining;
+  (3) **faithful `sub`/`sub_n`** — `align_read` marks secondaries `mem_mark_primary_se`-
+  style (a distinct-locus candidate whose query span overlaps the primary by more than
+  `MASK_LEVEL = 0.5` contributes its score to `sub`), replacing the ref-space
+  non-overlap heuristic (`src/alignment.rs`);
+  (4) **`frac_rep`** — `mapq *= (1 − frac_rep)`, the merged query fraction covered by
+  over-frequent (occ > max_occ) SMEMs (`repetitive_fraction`, threaded into
+  `approx_mapq_se`).
+  `XS:i` is now emitted on every mapped record in both writers (after `AS:i`),
+  unconditionally as bwa-mem2 does — mechanically closing the **T-011** XS deferral.
+- **Measured (chr1 / 300-uniq, `bench/compare_t021{,_summary}.md`):** **no regressions** —
+  field divergence byte-identical to T-019/T-020 (POS 0, FLAG 4, MAPQ 2, CIGAR 4, …);
+  594 unique reads stay MAPQ 60; `frac_rep` down-weights 0 of them; XS now present.
+  On repetitive reads the machinery fires (XS non-zero; MAPQ drops to 0/22 where a
+  secondary's score nears the primary).
+- **Residuals (other root cause — follow-up):** the bulk of T-015's over-scoring reads
+  are **not** closed. Their secondary locus is *inexact* (bwa DP-extends a short shared
+  seed across mismatches/indels, e.g. read `SRR7733443.26`'s 72 bp core maps elsewhere
+  as `96M55S`), which bwa-rs's exact-MEM seeding never surfaces → `sub = 0` → MAPQ 60;
+  and they are only *moderately* repetitive (occ ≤ 500) so `frac_rep = 0` doesn't apply.
+  Faithful approximate-secondary seeding is split to **T-024**. Full multi-mapper
+  measurement remains **OOM-blocked (T-023)**. XS *values* are not byte-identical
+  (partial secondary set) — same dependency on T-024.
 
 ### T-022: Paired-end MAPQ recalculation (`mem_sam_pe`) not implemented
 - **Status:** OPEN
@@ -589,3 +614,32 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
 - **Resolution:** Cap seed occurrences (bwa `-c` / `max_occ`) and avoid collecting all
   positions for ultra-frequent seeds; combine with batched/parallel alignment
   (**T-013**). Independent of the byte-identity goal but blocks large-set verification.
+- **Update (T-021):** An occurrence cap `DEFAULT_MAX_OCC = 500`
+  (`FMIndex::find_all_capped`, used by `find_supermaximal_mems`) is now in place —
+  over-frequent SMEMs are no longer enumerated. This is a *partial* mitigation: a
+  positional `sub2k` slice still OOM-killed mid-run during T-021 verification (the
+  reseed/secondary-chain builds and per-read DP on repeat-heavy reads remain
+  uncapped), so large-set measurement is still blocked. Batched/parallel alignment
+  (**T-013**) and a per-read work cap remain to do.
+
+### T-024: Approximate (inexact) secondary seeding to surface bwa's second-best loci
+- **Status:** OPEN
+- **Severity:** medium
+- **Affected field(s):** MAPQ, XS (optional tag).
+- **Symptom:** Split from T-021. After T-021's re-seeding + `mem_mark_primary_se`-style
+  `sub`/`sub_n` + `frac_rep`, the bulk of T-015's over-scoring reads still report MAPQ
+  60 where bwa-mem2 reports 0–52 (heavily soft-clipped, moderately repetitive reads).
+  Their second-best locus is *inexact* — bwa places it by DP-extending a short shared
+  seed across mismatches/indels (e.g. `SRR7733443.26`'s 72 bp core maps at a second
+  locus as `96M55S` / `65M1I35M1D26M24S`, not an exact 72 bp MEM). bwa-rs's exact-MEM
+  seeding never surfaces that locus, so `sub = 0` → MAPQ 60 and XS values diverge.
+- **Suspected cause:** T-021 surfaces secondaries only where the repeat is an *exact*
+  MEM at ≥2 loci. bwa's candidate set additionally includes chains whose seed is short
+  and shared but whose full alignment is inexact (found via `ksw`/banded extension at
+  each chain), producing a richer `sub`/XS set.
+- **Resolution:** Build alignment candidates from *all* chains (not just exact-repeat
+  reseeds) and let banded extension score each at its locus, so an inexact second-best
+  contributes to `sub`/XS; tighten the `mem_mark_primary_se` clustering to bwa's. This
+  unblocks the remaining T-015 MAPQ residual and XS *value* byte-matching (T-011).
+  Overlaps with **T-022** (faithful pairing score) and is gated on **T-023** for
+  large-set measurement.

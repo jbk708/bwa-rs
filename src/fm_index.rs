@@ -213,6 +213,16 @@ impl FMIndex {
         (left..right).filter_map(|i| self.sa.get(i)).collect()
     }
 
+    /// Like `find_all` but returns an empty Vec when the occurrence count exceeds
+    /// `max_occ`. Used by re-seeding to avoid blowing up on highly repetitive k-mers.
+    pub fn find_all_capped(&self, pattern: &[u8], max_occ: usize) -> Vec<u64> {
+        let (left, right) = self.search(pattern);
+        if right.saturating_sub(left) > max_occ {
+            return Vec::new();
+        }
+        (left..right).filter_map(|i| self.sa.get(i)).collect()
+    }
+
     pub fn save(&self, path: &Path) -> Result<(), BwaError> {
         let mut file = File::create(path)?;
 
@@ -537,6 +547,47 @@ mod tests {
         assert!(result.is_err());
 
         std::fs::remove_file(temp_path).ok();
+    }
+
+    #[test]
+    fn test_find_all_capped_above_limit_returns_empty() {
+        // AC appears twice in ACAC; capping at 1 should return empty
+        let ref_seq = Reference::parse_fasta(">test\nACAC").unwrap();
+        let index = FMIndex::build(&ref_seq);
+        let pattern = vec![0u8, 1]; // AC
+        assert!(
+            index.count(&pattern) >= 2,
+            "AC should occur at least twice in ACAC"
+        );
+        let capped = index.find_all_capped(&pattern, 1);
+        assert!(
+            capped.is_empty(),
+            "find_all_capped should return empty when count > max_occ"
+        );
+    }
+
+    #[test]
+    fn test_find_all_capped_at_or_below_limit_returns_positions() {
+        // AC appears twice in ACAC; capping at 2 should return both positions
+        let ref_seq = Reference::parse_fasta(">test\nACAC").unwrap();
+        let index = FMIndex::build(&ref_seq);
+        let pattern = vec![0u8, 1]; // AC
+        let count = index.count(&pattern);
+        let capped = index.find_all_capped(&pattern, count);
+        assert_eq!(
+            capped.len(),
+            count,
+            "find_all_capped at limit should return all positions"
+        );
+        let uncapped = index.find_all(&pattern);
+        let mut capped_sorted = capped.clone();
+        capped_sorted.sort();
+        let mut uncapped_sorted = uncapped.clone();
+        uncapped_sorted.sort();
+        assert_eq!(
+            capped_sorted, uncapped_sorted,
+            "find_all_capped at limit matches find_all"
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@
 use rayon::prelude::*;
 
 use crate::fm_index::FMIndex;
+use crate::mem_finder::DEFAULT_MAX_OCC;
 use crate::seed::{filter_mems, find_mems};
 use crate::types::MEM;
 
@@ -90,7 +91,7 @@ fn find_mems_in_chunk(
     overlap: usize,
 ) -> Vec<MEM> {
     let chunk_query = &query[chunk_start..chunk_end];
-    let mut mems = find_mems(index, chunk_query, min_len);
+    let mut mems = find_mems(index, chunk_query, min_len, DEFAULT_MAX_OCC);
 
     for mem in &mut mems {
         mem.query_start += chunk_start;
@@ -115,7 +116,7 @@ pub fn parallel_find_mems(index: &FMIndex, query: &[u8], config: &ChunkConfig) -
     }
 
     if query.len() <= config.chunk_size {
-        return find_mems(index, query, config.min_mem_len);
+        return find_mems(index, query, config.min_mem_len, DEFAULT_MAX_OCC);
     }
 
     let chunks = partition_query(query, config.chunk_size, config.chunk_overlap);
@@ -265,7 +266,7 @@ mod tests {
         let query = vec![0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]; // ACGT repeated
         let config = ChunkConfig::new().min_mem_len(2);
         let mems = parallel_find_mems(&index, &query, &config);
-        assert!(!mems.is_empty() || true);
+        assert!(!mems.is_empty());
     }
 
     #[test]
@@ -284,7 +285,7 @@ mod tests {
         let config = ChunkConfig::new().min_mem_len(2);
 
         let parallel_mems = parallel_find_mems(&index, &query, &config);
-        let sequential_mems = find_mems(&index, &query, config.min_mem_len);
+        let sequential_mems = find_mems(&index, &query, config.min_mem_len, DEFAULT_MAX_OCC);
 
         for pm in &parallel_mems {
             let found = sequential_mems.iter().any(|sm| {

@@ -10,8 +10,23 @@ use crate::types::MEM;
 pub const DEFAULT_MIN_SEED_LEN: usize = 19;
 
 /// Find MEMs using supermaximal algorithm (O(n) expected time).
-pub fn find_mems(index: &FMIndex, query: &[u8], min_len: usize) -> Vec<MEM> {
-    find_supermaximal_mems(index, query, min_len)
+///
+/// `max_occ` caps the number of reference occurrences a SMEM may have; SMEMs
+/// with more hits than `max_occ` are discarded. Use `DEFAULT_MAX_OCC` for the
+/// bwa-mem2-equivalent behaviour.
+pub fn find_mems(index: &FMIndex, query: &[u8], min_len: usize, max_occ: usize) -> Vec<MEM> {
+    find_supermaximal_mems(index, query, min_len, max_occ).0
+}
+
+/// Like [`find_mems`] but also returns bwa's `frac_rep` (the fraction of the read
+/// covered by over-frequent repetitive SMEMs), used to down-weight MAPQ.
+pub fn find_mems_with_frac_rep(
+    index: &FMIndex,
+    query: &[u8],
+    min_len: usize,
+    max_occ: usize,
+) -> (Vec<MEM>, f32) {
+    find_supermaximal_mems(index, query, min_len, max_occ)
 }
 
 pub fn filter_mems(mems: &mut Vec<MEM>) {

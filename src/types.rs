@@ -281,6 +281,9 @@ pub struct AlignmentResult {
     pub reverse_strand: bool,
     pub nm: u32,
     pub score: i32,
+    /// Best suboptimal alignment score (bwa XS:i tag). Zero when no secondary
+    /// hit qualifies (i.e. the read is uniquely placed).
+    pub xs: i32,
     pub md_tag: Option<String>,
 }
 
@@ -294,6 +297,7 @@ impl AlignmentResult {
             reverse_strand: false,
             nm: 0,
             score: 0,
+            xs: 0,
             md_tag: None,
         }
     }
@@ -446,6 +450,7 @@ mod tests {
             reverse_strand: false,
             nm: 0,
             score: 5,
+            xs: 0,
             md_tag: None,
         };
 
@@ -468,6 +473,7 @@ mod tests {
             reverse_strand: false,
             nm: 2,
             score: 3,
+            xs: 0,
             md_tag: None,
         };
 
@@ -491,6 +497,7 @@ mod tests {
             reverse_strand: false,
             nm: 2,
             score: 4,
+            xs: 0,
             md_tag: None,
         };
 
@@ -518,6 +525,7 @@ mod tests {
             reverse_strand: false,
             nm: 3,
             score: 6,
+            xs: 0,
             md_tag: None,
         };
 
@@ -546,6 +554,7 @@ mod tests {
             reverse_strand: false,
             nm: 0,
             score: 6,
+            xs: 0,
             md_tag: None,
         };
 
@@ -568,6 +577,7 @@ mod tests {
             reverse_strand: false,
             nm: 3,
             score: -12,
+            xs: 0,
             md_tag: None,
         };
 
