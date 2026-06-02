@@ -2,6 +2,9 @@
 
 use crate::types::{AlignmentResult, Orientation};
 
+/// Std-dev multiplier for the proper-pair insert-size window (bwa `mem_pestat` MAX_STDDEV).
+const MAX_STDDEV: f64 = 4.0;
+
 /// Fully-assembled per-read mate fields for SAM output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MateFields {
@@ -69,11 +72,11 @@ impl InsertSizeDistribution {
     }
 
     pub fn lower_bound(&self) -> u32 {
-        (self.mean - 3.0 * self.std_dev).max(0.0) as u32
+        (self.mean - MAX_STDDEV * self.std_dev).max(0.0) as u32
     }
 
     pub fn upper_bound(&self) -> u32 {
-        (self.mean + 3.0 * self.std_dev) as u32
+        (self.mean + MAX_STDDEV * self.std_dev) as u32
     }
 }
 
@@ -143,31 +146,44 @@ pub fn pair_reads(
     paired
 }
 
-/// Returns true when both reads form a proper FR pair within the insert-size bounds.
+/// Insert size of an FR-oriented pair measured between the two reads' 5′ ends, or
+/// `None` when the pair is not FR-concordant.
 ///
-/// Requires both reads to be mapped, on opposite strands, with the forward read's
-/// position not exceeding the reverse read's position, and an insert size within
-/// `[dist.lower_bound(), dist.upper_bound()]`.
-pub fn is_proper_pair(
-    read1: &AlignmentResult,
-    read2: &AlignmentResult,
-    dist: &InsertSizeDistribution,
-) -> bool {
+/// Each read is anchored at its 5′-most reference coordinate (the forward read's start,
+/// the reverse read's end), matching the [`template_length`] convention. The pair is FR
+/// when the forward read's 5′ end lies at or before the reverse read's 5′ end, which
+/// tolerates the small dovetail overlaps bwa still treats as FR. Returns `None` if either
+/// read is unmapped, the strands match, or the orientation is RF/outward.
+fn fr_insert_size(read1: &AlignmentResult, read2: &AlignmentResult) -> Option<u32> {
     if read1.is_unmapped() || read2.is_unmapped() {
-        return false;
+        return None;
     }
     if read1.reverse_strand == read2.reverse_strand {
-        return false;
+        return None;
     }
     let (fwd, rev) = if !read1.reverse_strand {
         (read1, read2)
     } else {
         (read2, read1)
     };
-    if fwd.position > rev.position {
-        return false;
+    let fwd_5p = fwd.position as i64;
+    let rev_5p = rev.position as i64 + rev.cigar.reference_length() as i64 - 1;
+    if fwd_5p > rev_5p {
+        return None;
     }
-    match pair_insert_size(read1, read2) {
+    Some((rev_5p - fwd_5p + 1) as u32)
+}
+
+/// Returns true when both reads form a proper FR pair within the insert-size bounds.
+///
+/// Requires FR orientation (see [`fr_insert_size`]) and a 5′-to-5′ insert size within
+/// `[dist.lower_bound(), dist.upper_bound()]`.
+pub fn is_proper_pair(
+    read1: &AlignmentResult,
+    read2: &AlignmentResult,
+    dist: &InsertSizeDistribution,
+) -> bool {
+    match fr_insert_size(read1, read2) {
         Some(isize) => isize >= dist.lower_bound() && isize <= dist.upper_bound(),
         None => false,
     }
@@ -201,21 +217,13 @@ pub fn template_length(read: &AlignmentResult, mate: &AlignmentResult) -> i64 {
     }
 }
 
-/// Returns the outer-coordinate insert size when both reads are mapped.
+/// Returns the FR-oriented 5′-to-5′ insert size for feeding the insert-size distribution.
 ///
-/// Span is `max(end1, end2) - min(pos1, pos2)` using `reference_length` for ends.
-/// Returns `None` if either read is unmapped.
+/// Delegates to [`fr_insert_size`]: `Some` only for mapped, opposite-strand, FR-concordant
+/// pairs, so the distribution is estimated from concordant pairs alone (matching bwa's
+/// per-orientation binning).
 pub fn pair_insert_size(read1: &AlignmentResult, read2: &AlignmentResult) -> Option<u32> {
-    if read1.is_unmapped() || read2.is_unmapped() {
-        return None;
-    }
-    let start1 = read1.position;
-    let end1 = read1.position + read1.cigar.reference_length();
-    let start2 = read2.position;
-    let end2 = read2.position + read2.cigar.reference_length();
-    let min_start = start1.min(start2);
-    let max_end = end1.max(end2);
-    Some((max_end - min_start) as u32)
+    fr_insert_size(read1, read2)
 }
 
 /// Assembles the SAM mate fields for one read of a pair.
@@ -445,6 +453,33 @@ mod tests {
         let r2 = unmapped_read();
         assert_eq!(pair_insert_size(&r1, &r2), None);
         assert_eq!(pair_insert_size(&r2, &r1), None);
+    }
+
+    #[test]
+    fn proper_pair_dovetail_fr() {
+        // Forward read starts a few bp AFTER the reverse read's start (dovetail overlap),
+        // so the alignment-start ordering is inverted, but the 5' ends are still FR.
+        let fwd = mapped_read(102, 100, false); // 5' = 102
+        let rev = mapped_read(100, 100, true); // 5' = 100 + 99 = 199
+        assert_eq!(fr_insert_size(&fwd, &rev), Some(98));
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        assert!(
+            is_proper_pair(&fwd, &rev, &dist),
+            "small dovetail is still a proper FR pair"
+        );
+    }
+
+    #[test]
+    fn proper_pair_large_insert_within_4sigma() {
+        // Insert 800 is beyond mean+3*std (710) but within mean+4*std (830): bwa MAX_STDDEV.
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(800, 100, true); // 5' insert = (800+99) - 100 + 1 = 800
+        assert_eq!(fr_insert_size(&r1, &r2), Some(800));
+        let dist = InsertSizeDistribution::with_params(350.0, 120.0);
+        assert!(
+            is_proper_pair(&r1, &r2, &dist),
+            "insert within 4 std-devs is proper"
+        );
     }
 
     // --- mate_fields flag bits ---
