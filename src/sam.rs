@@ -460,10 +460,22 @@ mod tests {
         };
 
         let mut buf: Vec<u8> = Vec::new();
-        write_paired_record(&mut buf, &reference, "read1", &r1, &[0u8; 100], &"I".repeat(100), &mf).unwrap();
+        write_paired_record(
+            &mut buf,
+            &reference,
+            "read1",
+            &r1,
+            &[0u8; 100],
+            &"I".repeat(100),
+            &mf,
+        )
+        .unwrap();
         let line = String::from_utf8(buf).unwrap();
 
-        assert!(line.contains("\tNM:i:2\t"), "NM tag present with correct value");
+        assert!(
+            line.contains("\tNM:i:2\t"),
+            "NM tag present with correct value"
+        );
         assert!(line.contains("\tMD:Z:50A49\t"), "MD tag present");
         assert!(line.contains("\tMC:Z:100M\t"), "MC tag present");
         assert!(line.contains("\tAS:i:151"), "AS tag present");
@@ -499,11 +511,24 @@ mod tests {
         };
 
         let mut buf: Vec<u8> = Vec::new();
-        write_paired_record(&mut buf, &reference, "read_unmap", &r, &[0u8, 1, 2, 3], "IIII", &mf).unwrap();
+        write_paired_record(
+            &mut buf,
+            &reference,
+            "read_unmap",
+            &r,
+            &[0u8, 1, 2, 3],
+            "IIII",
+            &mf,
+        )
+        .unwrap();
         let line = String::from_utf8(buf).unwrap();
 
         let fields: Vec<&str> = line.trim().split('\t').collect();
-        assert_eq!(fields.len(), 11, "unmapped record should have exactly 11 fields, no tags");
+        assert_eq!(
+            fields.len(),
+            11,
+            "unmapped record should have exactly 11 fields, no tags"
+        );
         assert!(!line.contains("NM:"), "no NM on unmapped");
         assert!(!line.contains("MD:"), "no MD on unmapped");
         assert!(!line.contains("MC:"), "no MC on unmapped");

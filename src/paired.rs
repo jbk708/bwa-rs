@@ -513,7 +513,11 @@ mod tests {
         assert_eq!(mf1.rnext, "=");
         assert_eq!(mf1.pnext, 201);
         assert_eq!(mf1.placed_pos, None);
-        assert_eq!(mf1.mc, Some("100M".to_string()), "r2 is mapped so mc is Some");
+        assert_eq!(
+            mf1.mc,
+            Some("100M".to_string()),
+            "r2 is mapped so mc is Some"
+        );
 
         let mf2 = mate_fields(&r2, &r1, false, proper);
         assert_eq!(mf2.flag & 0x1, 0x1, "paired bit always set");
@@ -527,7 +531,11 @@ mod tests {
         assert_eq!(mf2.rnext, "=");
         assert_eq!(mf2.pnext, 101);
         assert_eq!(mf2.placed_pos, None);
-        assert_eq!(mf2.mc, Some("100M".to_string()), "r1 is mapped so mc is Some");
+        assert_eq!(
+            mf2.mc,
+            Some("100M".to_string()),
+            "r1 is mapped so mc is Some"
+        );
     }
 
     #[test]
@@ -578,7 +586,11 @@ mod tests {
             Some(100),
             "unmapped read inherits mate's 0-based pos"
         );
-        assert_eq!(mf2.mc, Some("100M".to_string()), "mate (r1) is mapped so mc is Some");
+        assert_eq!(
+            mf2.mc,
+            Some("100M".to_string()),
+            "mate (r1) is mapped so mc is Some"
+        );
     }
 
     #[test]

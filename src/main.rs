@@ -304,7 +304,9 @@ mod tests {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
                 self.0.lock().unwrap().write(buf)
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         let mut output: Box<dyn Write> = Box::new(SharedWriter(shared2));
         write_sam_record(&mut output, reference, qname, result, bases, qual, false).unwrap();
@@ -323,7 +325,13 @@ mod tests {
         result.score = 50;
         result.md_tag = Some("MD:Z:50".to_string());
 
-        let line = call_write_sam_record(&reference, "single_read", &result, &[0u8; 50], &"I".repeat(50));
+        let line = call_write_sam_record(
+            &reference,
+            "single_read",
+            &result,
+            &[0u8; 50],
+            &"I".repeat(50),
+        );
 
         assert!(line.contains("\tNM:i:3\t"), "NM tag present");
         assert!(line.contains("\tMD:Z:50\t"), "MD tag present");
@@ -344,7 +352,13 @@ mod tests {
         let mut result = AlignmentResult::new(0, Cigar::new());
         result.flag = 0x4;
 
-        let line = call_write_sam_record(&reference, "unmapped_read", &result, &[0u8, 1, 2, 3], "IIII");
+        let line = call_write_sam_record(
+            &reference,
+            "unmapped_read",
+            &result,
+            &[0u8, 1, 2, 3],
+            "IIII",
+        );
 
         let fields: Vec<&str> = line.trim().split('\t').collect();
         assert_eq!(fields.len(), 11, "unmapped single-end: exactly 11 fields");
