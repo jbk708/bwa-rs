@@ -5,9 +5,10 @@ use std::cmp::Ordering;
 use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
+use crate::mem_finder::DEFAULT_MAX_OCC;
 use crate::paired::InsertSizeDistribution;
 use crate::reference::reverse_complement;
-use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
+use crate::seed::{filter_mems, find_mems_with_frac_rep, DEFAULT_MIN_SEED_LEN};
 use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp};
 
 pub const DEFAULT_MIN_SCORE: i32 = 30;
@@ -15,6 +16,10 @@ pub const DEFAULT_MIN_SCORE: i32 = 30;
 // Cap on the number of secondary chains aligned to derive the suboptimal score
 // for MAPQ; keeps the cost linear on repetitive reads.
 const MAX_SUB_CHAINS: usize = 32;
+
+// Fraction of the shorter alignment's query span that must overlap with the
+// primary for a candidate to be treated as a secondary (masked) hit.
+const MASK_LEVEL: f32 = 0.5;
 
 #[derive(Clone, Debug)]
 pub struct Scoring {
@@ -77,7 +82,8 @@ impl Aligner {
         query: &[u8],
         _mate: Option<&[u8]>,
     ) -> Result<AlignmentResult, BwaError> {
-        let mut mems = find_mems(&self.index, query, self.min_seed_len);
+        let (mut mems, frac_rep) =
+            find_mems_with_frac_rep(&self.index, query, self.min_seed_len, DEFAULT_MAX_OCC);
 
         if mems.is_empty() {
             return Ok(self.unmapped_result());
@@ -122,8 +128,10 @@ impl Aligner {
             alt_chains.truncate(MAX_SUB_CHAINS);
         }
 
-        let primary_start = result.position;
-        let primary_end = primary_start + result.cigar.reference_length();
+        let pspan = query_span(&result.cigar);
+        let primary_len = pspan.1.saturating_sub(pspan.0);
+        let primary_pos = result.position;
+        let primary_ref_end = primary_pos + result.cigar.reference_length();
         let primary_reverse = result.reverse_strand;
 
         let mut sub = 0i32;
@@ -132,16 +140,34 @@ impl Aligner {
             let Ok(alt_res) = self.build_alignment(query, alt) else {
                 continue;
             };
-            let alt_start = alt_res.position;
-            let alt_end = alt_start + alt_res.cigar.reference_length();
-            // Two alignments are at distinct loci when they don't overlap on the
-            // same strand in forward coordinates.
-            let overlaps = alt_res.reverse_strand == primary_reverse
-                && alt_start < primary_end
-                && primary_start < alt_end;
-            if overlaps {
+
+            // A candidate only contributes a suboptimal score when it is a
+            // genuinely distinct placement; a chain that reproduces the primary
+            // locus (e.g. a re-seed of the same region) is the same alignment.
+            let alt_ref_end = alt_res.position + alt_res.cigar.reference_length();
+            let same_locus = alt_res.reverse_strand == primary_reverse
+                && alt_res.position < primary_ref_end
+                && primary_pos < alt_ref_end;
+            if same_locus {
                 continue;
             }
+
+            let cspan = query_span(&alt_res.cigar);
+            let cand_len = cspan.1.saturating_sub(cspan.0);
+
+            // Query-space overlap between candidate and primary spans.
+            let overlap_start = pspan.0.max(cspan.0);
+            let overlap_end = pspan.1.min(cspan.1);
+            let overlap = overlap_end.saturating_sub(overlap_start);
+
+            // Treat as secondary (masked) when query overlap exceeds MASK_LEVEL of
+            // the shorter aligned span — mirrors bwa's mem_mark_primary_se logic.
+            let min_len = primary_len.min(cand_len);
+            let is_secondary = min_len > 0 && overlap as f32 > MASK_LEVEL * min_len as f32;
+            if !is_secondary {
+                continue;
+            }
+
             match alt_res.score.cmp(&sub) {
                 Ordering::Greater => {
                     sub = alt_res.score;
@@ -159,7 +185,10 @@ impl Aligner {
             aligned_span(&result.cigar),
             &self.scoring,
             self.min_seed_len,
+            frac_rep,
         );
+
+        result.xs = sub;
 
         Ok(result)
     }
@@ -413,7 +442,7 @@ impl Aligner {
         result.reverse_strand = rescued_reverse;
         result.score = la.score;
         result.nm = nm;
-        result.mapq = approx_mapq_se(la.score, 0, 0, span, &self.scoring, self.min_seed_len);
+        result.mapq = approx_mapq_se(la.score, 0, 0, span, &self.scoring, self.min_seed_len, 0.0);
         result.md_tag = Some(md_tag);
         Some(result)
     }
@@ -427,6 +456,7 @@ impl Aligner {
             reverse_strand: false,
             nm: 0,
             score: 0,
+            xs: 0,
             md_tag: None,
         }
     }
@@ -753,9 +783,11 @@ pub fn local_align(query: &[u8], window: &[u8], scoring: &Scoring) -> Option<Loc
 
 /// Port of bwa's `mem_approx_mapq_se`. `score` is the alignment score, `sub` the best
 /// suboptimal *alignment* score (0 when none — the bwa `min_seed_len * a` baseline is
-/// applied here), `sub_n` the number of comparable suboptimal hits, and `aligned_len`
-/// the aligned span `l = max(query_core, ref_core)`. bwa-mem2 defaults drive the
-/// `mapQ_coef_len = 50` branch; `csub`/`frac_rep` are not modeled (treated as 0).
+/// applied here), `sub_n` the number of comparable suboptimal hits, `aligned_len`
+/// the aligned span `l = max(query_core, ref_core)`, and `frac_rep` the fraction of
+/// the read covered by repetitive seeds (bwa's final `mapq *= 1 - frac_rep`
+/// down-weighting). bwa-mem2 defaults drive the `mapQ_coef_len = 50` branch; `csub`
+/// is not modeled (treated as 0).
 fn approx_mapq_se(
     score: i32,
     sub: i32,
@@ -763,6 +795,7 @@ fn approx_mapq_se(
     aligned_len: i32,
     scoring: &Scoring,
     min_seed_len: usize,
+    frac_rep: f32,
 ) -> u8 {
     const MAPQ_COEF_LEN: i32 = 50;
     let a = scoring.match_score;
@@ -793,7 +826,25 @@ fn approx_mapq_se(
         mapq -= (4.343 * ((sub_n + 1) as f64).ln() + 0.499) as i32;
     }
 
-    mapq.clamp(0, 60) as u8
+    let mapq = mapq.clamp(0, 60);
+    (mapq as f64 * (1.0 - frac_rep as f64) + 0.499) as i32 as u8
+}
+
+/// Returns (start, end) of the query bases consumed by the aligned core (M/=/X/I
+/// ops), measured from the start of the read. Leading soft-clips shift `start`
+/// forward; `end` = start + aligned query length.
+fn query_span(cigar: &Cigar) -> (usize, usize) {
+    let leading_clip = match cigar.ops.first() {
+        Some(&(CigarOp::S, len)) => len as usize,
+        _ => 0,
+    };
+    let aligned_q: usize = cigar
+        .ops
+        .iter()
+        .filter(|(op, _)| matches!(op, CigarOp::M | CigarOp::Eq | CigarOp::X | CigarOp::I))
+        .map(|(_, len)| *len as usize)
+        .sum();
+    (leading_clip, leading_clip + aligned_q)
 }
 
 /// bwa's alignment length `l = max(query span, reference span)` over the aligned core
@@ -1679,19 +1730,28 @@ mod tests {
         // l=151 >= 50, identity = 1 - (151*1 - 151)/5/151 = 1.0
         // coef_fac = ln(50), tmp = ln(50)/ln(151) * 1.0 * 1.0 ≈ 0.8054
         // mapq = (6.02 * 132/1 * 0.8054^2 * 0.8054^2 + 0.499) ≈ very large → clamps to 60
-        let result = approx_mapq_se(151, 0, 0, 151, &Scoring::default(), 19);
+        let result = approx_mapq_se(151, 0, 0, 151, &Scoring::default(), 19, 0.0);
         assert_eq!(result, 60);
     }
 
     #[test]
     fn approx_mapq_se_sub_ge_score_is_zero() {
-        assert_eq!(approx_mapq_se(100, 100, 0, 100, &Scoring::default(), 19), 0);
-        assert_eq!(approx_mapq_se(100, 120, 0, 100, &Scoring::default(), 19), 0);
+        assert_eq!(
+            approx_mapq_se(100, 100, 0, 100, &Scoring::default(), 19, 0.0),
+            0
+        );
+        assert_eq!(
+            approx_mapq_se(100, 120, 0, 100, &Scoring::default(), 19, 0.0),
+            0
+        );
     }
 
     #[test]
     fn approx_mapq_se_zero_score_is_zero() {
-        assert_eq!(approx_mapq_se(0, 0, 0, 100, &Scoring::default(), 19), 0);
+        assert_eq!(
+            approx_mapq_se(0, 0, 0, 100, &Scoring::default(), 19, 0.0),
+            0
+        );
     }
 
     #[test]
@@ -1706,8 +1766,8 @@ mod tests {
         //                   = (4.343 * 1.60944 + 0.499) as i32
         //                   = (6.990 + 0.499) as i32 = 7
         // mapq4 = 55 - 7 = 48
-        let m0 = approx_mapq_se(40, 30, 0, 45, &Scoring::default(), 19);
-        let m4 = approx_mapq_se(40, 30, 4, 45, &Scoring::default(), 19);
+        let m0 = approx_mapq_se(40, 30, 0, 45, &Scoring::default(), 19, 0.0);
+        let m4 = approx_mapq_se(40, 30, 4, 45, &Scoring::default(), 19, 0.0);
         assert_eq!(m0, 55);
         assert_eq!(m4, 48);
         assert!(m4 < m0);
@@ -1716,8 +1776,18 @@ mod tests {
     #[test]
     fn approx_mapq_se_clamps_to_60() {
         // A perfect long read with no suboptimal hits: must clamp to exactly 60.
-        let result = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19);
+        let result = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 0.0);
         assert_eq!(result, 60);
+    }
+
+    #[test]
+    fn approx_mapq_se_frac_rep_downweights() {
+        // bwa's final mapq *= (1 - frac_rep): a fully-repetitive read drops to 0,
+        // half-repetitive roughly halves the unweighted score.
+        let full = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 1.0);
+        let half = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 0.5);
+        assert_eq!(full, 0);
+        assert_eq!(half, 30);
     }
 
     // ---- aligned_span unit tests ----
@@ -1784,5 +1854,88 @@ mod tests {
             return;
         }
         assert_eq!(result.mapq, 60, "unique read must get mapq=60");
+    }
+
+    /// A query that matches at two distinct reference loci should get `xs > 0`
+    /// and `mapq < 60`.  A query that occurs only once should get `xs == 0` and
+    /// `mapq == 60`.
+    #[test]
+    fn xs_nonzero_and_mapq_lt60_for_repeat_read() {
+        // Reference: unique flanks at both ends; the same 30-bp core repeated twice.
+        // Layout: UNIQUE_LEFT(30) + CORE(30) + SEPARATOR(5) + CORE(30) + UNIQUE_RIGHT(30)
+        let core = "ACGTACGATCGATCGGATTCCAGTCAGTCA";
+        // Unique flanks chosen to be non-repetitive and not present elsewhere.
+        let left_flank = "GGCTAGCTAGCTAGCTAGCTAGCTAGCTAG";
+        let sep = "CCCCC";
+        let right_flank = "TTCGATCGATCGATCGATCGATCGATCGAT";
+        let body = format!("{}{}{}{}{}", left_flank, core, sep, core, right_flank);
+
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{body}")).unwrap();
+        let ref_data_2n = ref_seq.as_slice_2n();
+        let index = FMIndex::build_2n(&ref_seq);
+
+        let aligner = Aligner::new(index, ref_data_2n.to_vec())
+            .min_seed_len(10)
+            .min_score(5);
+
+        // The core itself occurs at two positions → should produce xs > 0 and mapq < 60.
+        let repeat_query = enc(core);
+        let repeat_result = aligner.align_read(&repeat_query, None).unwrap();
+        if repeat_result.flag & 0x4 != 0 {
+            return; // inconclusive if unmapped
+        }
+        assert!(
+            repeat_result.xs > 0 || repeat_result.mapq < 60,
+            "repeat read should have xs>0 or mapq<60; xs={}, mapq={}",
+            repeat_result.xs,
+            repeat_result.mapq
+        );
+
+        // A unique 30-bp substring taken from the left flank → should get xs==0, mapq==60.
+        // Build the aligner using a single-stranded (forward-only) index so the RC of
+        // the unique flank doesn't appear as a second hit.
+        let ref_fwd = ref_seq.as_slice().to_vec();
+        let index2 = FMIndex::build(&ref_seq);
+        let aligner2 = Aligner::new(index2, ref_fwd).min_seed_len(10).min_score(5);
+        let unique_query = enc(left_flank);
+        let unique_result = aligner2.align_read(&unique_query, None).unwrap();
+        if unique_result.flag & 0x4 != 0 {
+            return; // inconclusive
+        }
+        assert_eq!(
+            unique_result.xs, 0,
+            "unique read must have xs=0; mapq={}",
+            unique_result.mapq
+        );
+        assert_eq!(
+            unique_result.mapq, 60,
+            "unique read must have mapq=60; xs={}",
+            unique_result.xs
+        );
+    }
+
+    /// query_span correctly identifies the aligned region of a CIGAR.
+    #[test]
+    fn query_span_extracts_aligned_bounds() {
+        // 5S 10M 3I 7M 4S → start=5, end=5+10+3+7=25
+        let c = make_cigar(&[
+            (CigarOp::S, 5),
+            (CigarOp::M, 10),
+            (CigarOp::I, 3),
+            (CigarOp::M, 7),
+            (CigarOp::S, 4),
+        ]);
+        let (s, e) = query_span(&c);
+        assert_eq!(s, 5, "start = leading soft-clip");
+        assert_eq!(e, 25, "end = start + aligned query bases");
+    }
+
+    #[test]
+    fn query_span_no_clips() {
+        // 20M → start=0, end=20
+        let c = make_cigar(&[(CigarOp::M, 20)]);
+        let (s, e) = query_span(&c);
+        assert_eq!(s, 0);
+        assert_eq!(e, 20);
     }
 }

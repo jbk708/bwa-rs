@@ -302,6 +302,7 @@ fn write_sam_record(
             write!(output, "\t{}", md)?;
         }
         write!(output, "\tAS:i:{}", result.score)?;
+        write!(output, "\tXS:i:{}", result.xs)?;
     }
     writeln!(output)?;
     Ok(())
@@ -340,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn single_end_mapped_record_emits_nm_md_as_no_mc_no_xs() {
+    fn single_end_mapped_record_emits_nm_md_as_xs_no_mc() {
         let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
         let mut cigar = Cigar::new();
         cigar.push(CigarOp::M, 50);
@@ -361,13 +362,38 @@ mod tests {
         assert!(line.contains("\tMD:Z:50\t"), "MD tag present");
         assert!(line.contains("\tAS:i:50"), "AS tag present");
         assert!(!line.contains("MC:"), "no MC in single-end");
-        assert!(!line.contains("XS:"), "no XS emitted");
+        assert!(line.contains("\tXS:i:0"), "XS:i:0 emitted on mapped record");
 
         let nm_pos = line.find("\tNM:i:").unwrap();
         let md_pos = line.find("\tMD:Z:").unwrap();
         let as_pos = line.find("\tAS:i:").unwrap();
         assert!(nm_pos < md_pos, "NM before MD");
         assert!(md_pos < as_pos, "MD before AS");
+    }
+
+    #[test]
+    fn single_end_mapped_record_with_xs_emits_xs_after_as() {
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, 50);
+        let mut result = AlignmentResult::new(0, cigar);
+        result.nm = 0;
+        result.score = 50;
+        result.xs = 30;
+        result.md_tag = Some("MD:Z:50".to_string());
+
+        let line = call_write_sam_record(
+            &reference,
+            "repeat_read",
+            &result,
+            &[0u8; 50],
+            &"I".repeat(50),
+        );
+
+        assert!(line.contains("\tXS:i:30"), "XS tag emitted when xs > 0");
+        let as_pos = line.find("\tAS:i:").unwrap();
+        let xs_pos = line.find("\tXS:i:").unwrap();
+        assert!(as_pos < xs_pos, "XS must appear after AS");
     }
 
     #[test]
