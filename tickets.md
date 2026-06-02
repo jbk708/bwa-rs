@@ -6,24 +6,29 @@ against `human_g1k_v37.fasta`).
 
 **Status:** In progress (2026-06-01). Two blockers and one OOM resolved
 (T-002, T-003, T-004 — see PR `fix-oom-and-64bit`); bwa-rs can now index the full
-human genome and map both strands. Soft-clipping (T-005) and a minimum-score
-filter (T-017) are now also resolved. Remaining output-divergence gaps are
-ticketed below, ordered roughly by impact toward byte-identical SAM.
+human genome and map both strands. Soft-clipping (T-005), a minimum-score
+filter (T-017), QNAME trimming (T-006), and paired-end SAM fields (T-007) are now
+also resolved. Remaining output-divergence gaps are ticketed below, ordered
+roughly by impact toward byte-identical SAM.
 
 **Verification baseline:** chr1 (249 Mbp), 300 uniquely-mapping read pairs from
 SRR7733443, normalized QNAMEs, `-k 19`. POS field matches:
 - After T-004: **246/300**.
 - After T-005 (soft-clipping): **284/300**.
 
+POS is unchanged by T-007. T-007 instead closed the pairing-field divergence: on
+this set FLAG dropped 100% → 1.3% (8/600), RNEXT 100% → 0%, TLEN 98.7% → 1.3%.
+
 The residual **16/300** POS mismatches break down into three independent causes
 (none inside soft-clipping itself):
 - **~10** — rigid seed anchoring: bwa-mem2 runs banded Smith-Waterman that can
   shift the alignment 1–10 bp relative to the seed (placing a read full-length
   where bwa-rs pins the seed and soft-clips the overhang). See **T-018**.
-- **3** — low-scoring partial hits bwa-mem2 rejects. T-017 now reports these
-  unmapped (matching bwa-mem2's mapped/unmapped status), but their residual
-  POS/FLAG fields are the unmapped-mate convention owned by **T-007**.
-- **3** — reads bwa-mem2 maps via mate rescue that bwa-rs leaves unmapped. **T-007**.
+- **3** — low-scoring partial hits bwa-mem2 rejects. T-017 reports these unmapped
+  (matching bwa-mem2's mapped/unmapped status); T-007 now also emits their
+  unmapped-mate POS/FLAG convention (mapped mate's coordinate + paired bits).
+- **3** — reads bwa-mem2 maps via mate rescue that bwa-rs leaves unmapped. Split
+  out of T-007 to **T-019** (the 8/600 residual FLAG diffs are these rescue cases).
 
 ---
 
@@ -198,16 +203,32 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   matches bwa-mem2 on every record.
 
 ### T-007: Paired-end not implemented (pairing FLAG bits, RNEXT/PNEXT/TLEN)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t007-paired-end`, PR #52)
 - **Severity:** high
-- **Affected field(s):** FLAG (0x1/0x2/0x40/0x80, mate-reverse 0x20), RNEXT, PNEXT, TLEN.
-- **Symptom:** Mates are aligned independently (`align_single` per read,
-  `src/main.rs`); bwa-rs emits FLAG `144` where bwa-mem2 emits `147` (missing
-  0x1 paired / 0x2 proper-pair), and RNEXT/PNEXT/TLEN are always `*`/0/0.
-- **Suspected cause:** No pairing/rescue/insert-size logic; the CLI loop never
-  considers the mate.
-- **Resolution:** Implement proper-pair detection, mate-coordinate fields, TLEN,
-  and the full pairing FLAG bits.
+- **Affected field(s):** FLAG (0x1/0x2/0x8/0x10/0x20/0x40/0x80), RNEXT, PNEXT, TLEN.
+- **Symptom:** Mates were aligned independently (`align_single` per read,
+  `src/main.rs`); bwa-rs emitted FLAG `144` where bwa-mem2 emits `147` (missing
+  0x1 paired / 0x2 proper-pair), and RNEXT/PNEXT/TLEN were always `*`/0/0.
+- **Cause:** No pairing/insert-size logic; the CLI loop never considered the mate.
+- **Resolution:** Added pure pairing helpers in `src/paired.rs` — `is_proper_pair`,
+  `template_length`, `fr_insert_size`/`pair_insert_size`, and `mate_fields`
+  (assembling FLAG 0x1/0x2/0x8/0x10/0x20/0x40/0x80, RNEXT, PNEXT, TLEN per the bwa
+  convention, plus the unmapped-mate coordinate convention where an unmapped read
+  inherits its mapped mate's POS). The CLI (`src/main.rs`) now runs a two-phase
+  paired loop: align all pairs and estimate the insert-size distribution, then
+  emit records with proper-pair flags (output is buffered via `BufWriter`).
+  Proper-pair detection classifies FR orientation by each read's 5′ end (so small
+  dovetails stay FR) and gates on a mean±4σ insert window (bwa `mem_pestat`
+  MAX_STDDEV). `write_paired_record` in `src/sam.rs` emits the record; added
+  `AlignmentResult::is_unmapped`.
+  **Measured (chr1 / 300 uniq pairs vs bwa-mem2):** FLAG 100% → 1.3% (8/600),
+  RNEXT 100% → 0%, PNEXT 100% → 2.8%, TLEN 98.7% → 1.3%; proper-pair FLAG
+  mismatches 18 → 0.
+- **Deferred:** Mate rescue (the 8/600 residual FLAG diffs — bwa rescues an
+  unmapped mate via Smith-Waterman) is split to **T-019**. Batch-wise insert-size
+  estimation matching bwa exactly (this uses a single global distribution and
+  buffers all alignment results) is a follow-up. RNAME stays `"ref"` (T-008) and
+  SEQ/QUAL stay `*` (T-009).
 
 ### T-008: RNAME hardcoded to `"ref"`; no multi-contig coordinate mapping
 - **Status:** OPEN
@@ -341,3 +362,18 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
 - **Resolution:** Replace seed-pinned outward extension with a single banded
   Smith-Waterman over the read, centered on the seed/chain (bwa `ksw` style); related
   to scoring defaults (T-014) and MAPQ (T-015).
+
+### T-019: Mate rescue not implemented (unmapped mate via banded Smith-Waterman)
+- **Status:** OPEN (split out of T-007)
+- **Severity:** medium
+- **Affected field(s):** FLAG (0x4/0x8/0x2), POS, CIGAR — mapped-vs-unmapped status of a mate.
+- **Symptom:** When one mate maps and the other does not, bwa-mem2 runs a banded
+  Smith-Waterman around the mapped mate's expected position (`mem_matesw`) and
+  often rescues the unmapped mate, marking the pair proper. bwa-rs leaves it
+  unmapped. On the chr1 / 300-uniq set this is the entire 8/600 residual FLAG
+  divergence after T-007 (bwa-rs `133`/`73`/`89`/`165` → bwa-mem2 `147`/`99`/`83`/`163`).
+- **Suspected cause:** No `mem_matesw` equivalent; `align_read` only seeds from the
+  read's own MEMs and never aligns a mate into the partner's insert-size window.
+- **Resolution:** Port bwa's `mem_matesw` — align the unmapped mate within the
+  insert-size window (the `InsertSizeDistribution` from T-007) around the mapped
+  mate; accept if it clears the score threshold (`-T`). Related to T-018 (banded SW).
