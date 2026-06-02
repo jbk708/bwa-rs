@@ -336,12 +336,22 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   (rayon `par_iter`) instead of the sequential loop.
 
 ### T-014: Scoring/seed defaults differ from bwa-mem2
-- **Status:** OPEN
+- **Status:** FIXED (branch `t016-headers-t014-defaults`)
 - **Severity:** medium (changes which alignment wins → POS/CIGAR/MAPQ)
-- **Symptom:** `gap_open` 6 vs 5; default `min_seed_len` 10 vs 19 (mitigated with
-  `-k 19`). Documented in `docs/PERFORMANCE.md`.
-- **Resolution:** Match bwa-mem2 defaults (gap_open 5, min_seed_len 19) or expose
-  matching flags; needed for scoring-tie-break parity.
+- **Symptom:** Believed `gap_open` 6 vs 5 and default `min_seed_len` 10 vs 19.
+- **Investigation:** Verified against the actual benchmark binary
+  (`bench/tools/bwa-mem2-2.2.1_x64-linux/bwa-mem2 mem`, run with default options):
+  its defaults are `-A 1 -B 4 -O [6,6] -E [1,1] -L [5,5] -k 19 -T 30`. The
+  `gap_open 6 vs 5` claim in this file and `docs/PERFORMANCE.md` was WRONG —
+  bwa-mem2 uses `gap_open = 6`, which bwa-rs's `Scoring::default()` already matched.
+  The library `DEFAULT_MIN_SEED_LEN` was also already 19. The only real divergence
+  was the CLI `-k` flag, whose default was still 10 (so the binary needed `-k 19`
+  to match).
+- **Resolution:** Changed the CLI `-k` default 10 → 19 (`src/main.rs`) so the
+  binary's default seeding matches bwa-mem2 without an explicit flag. Corrected the
+  false `gap_open 6 vs 5` row and the `min_seed_len` row in `docs/PERFORMANCE.md`.
+  All other scoring defaults (match 1, mismatch 4, gap_open 6, gap_extend 1,
+  clip 5, min_score 30) already matched bwa-mem2 and are unchanged.
 
 ### T-015: MAPQ computation differs
 - **Status:** OPEN
@@ -354,15 +364,22 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
 - **Resolution:** Port bwa's MAPQ formula.
 
 ### T-016: Header lines differ (@HD, @PG)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t016-headers-t014-defaults`)
 - **Severity:** low
 - **Affected field(s):** @HD, @PG (and @SQ ordering for multi-contig).
-- **Symptom:** bwa-rs emits `@HD VN:1.0 SO:unsorted` and
-  `@PG ID:bwa-rs PN:bwa-rs VN:0.1.0`; bwa-mem2 emits no @HD and
-  `@PG ID:bwa PN:bwa-mem2 VN:2.2.1 CL:<command line>`. (@SQ already matches.)
-- **Resolution:** Match bwa-mem2's header emission (drop @HD or match SO; emit a
-  bwa-style @PG with the real command line). Note byte-identical @PG also requires
-  matching the recorded command line.
+- **Symptom:** bwa-rs emitted `@HD VN:1.0 SO:unsorted` and
+  `@PG ID:bwa-rs PN:bwa-rs VN:0.1.0`; bwa-mem2 emits no @HD and a
+  `@PG ID:bwa-mem2 PN:bwa-mem2 VN:2.2.1 CL:<command line>` line. (@SQ already matches.)
+- **Resolution:** `write_header` (`src/main.rs`) now drops the `@HD` line entirely
+  (bwa-mem2 emits none) and emits a bwa-style `@PG` line carrying the crate version
+  (`env!("CARGO_PKG_VERSION")`) and a `CL:` field with the actual command line
+  (`std::env::args()`), replacing the hardcoded `VN:0.1.0` and absent CL. Header
+  construction was factored into a pure `header_text(reference, cmdline)` helper with
+  a unit test (`header_omits_hd_and_emits_pg_with_cmdline`).
+- **Intentional residual divergence:** the `@PG` `ID`/`PN` stay `bwa-rs` rather than
+  impersonating `bwa-mem2`, so the `@PG` line is *not* byte-identical by design — an
+  honest program identity is preferred over byte-matching the header. Everything else
+  in the header (no `@HD`, `@SQ`, bwa-style `@PG` shape with `VN`/`CL`) now matches.
 
 ### T-017: No minimum-score filter — low-scoring partial hits reported instead of unmapped
 - **Status:** FIXED (branch `t017-min-score`, stacked on `t005-soft-clipping`)

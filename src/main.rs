@@ -50,8 +50,8 @@ struct MemArgs {
     #[arg(short = 'o', default_value = "-")]
     pub output: PathBuf,
 
-    /// Minimum seed length (default: 10)
-    #[arg(short = 'k', default_value = "10")]
+    /// Minimum seed length (default: 19)
+    #[arg(short = 'k', default_value = "19")]
     pub min_seed_len: u32,
 
     /// Number of threads (default: auto-detect)
@@ -110,7 +110,8 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         Box::new(BufWriter::new(std::fs::File::create(&args.output)?))
     };
 
-    write_header(&mut output, &reference)?;
+    let cmdline = std::env::args().collect::<Vec<_>>().join(" ");
+    write_header(&mut output, &reference, &cmdline)?;
 
     let read1_reader = FASTQReader::from_path(&args.read1)?;
     let read2_reader = args
@@ -222,18 +223,30 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     Ok(())
 }
 
-fn write_header(output: &mut Box<dyn Write>, reference: &Reference) -> Result<(), BwaError> {
-    writeln!(output, "@HD\tVN:1.0\tSO:unsorted")?;
+fn header_text(reference: &Reference, cmdline: &str) -> String {
+    let mut text = String::new();
     for contig in &reference.contigs {
-        let len = contig.len();
         let name = if contig.name.is_empty() {
             "ref"
         } else {
             contig.name.as_str()
         };
-        writeln!(output, "@SQ\tSN:{}\tLN:{}", name, len)?;
+        text.push_str(&format!("@SQ\tSN:{}\tLN:{}\n", name, contig.len()));
     }
-    writeln!(output, "@PG\tID:bwa-rs\tPN:bwa-rs\tVN:0.1.0")?;
+    text.push_str(&format!(
+        "@PG\tID:bwa-rs\tPN:bwa-rs\tVN:{}\tCL:{}\n",
+        env!("CARGO_PKG_VERSION"),
+        cmdline
+    ));
+    text
+}
+
+fn write_header(
+    output: &mut Box<dyn Write>,
+    reference: &Reference,
+    cmdline: &str,
+) -> Result<(), BwaError> {
+    output.write_all(header_text(reference, cmdline).as_bytes())?;
     Ok(())
 }
 
@@ -365,5 +378,33 @@ mod tests {
         assert!(!line.contains("NM:"), "no NM on unmapped");
         assert!(!line.contains("MD:"), "no MD on unmapped");
         assert!(!line.contains("AS:"), "no AS on unmapped");
+    }
+
+    #[test]
+    fn header_omits_hd_and_emits_pg_with_cmdline() {
+        let reference = Reference::parse_fasta(&format!(">1\n{}", "A".repeat(100))).unwrap();
+        let header = header_text(&reference, "bwa-rs mem -R ref.fa -1 r1.fq -2 r2.fq");
+
+        assert!(!header.contains("@HD"), "bwa-mem2 emits no @HD line");
+        assert!(
+            header.contains("@SQ\tSN:1\tLN:100\n"),
+            "contig @SQ line present"
+        );
+        let pg = header
+            .lines()
+            .find(|l| l.starts_with("@PG"))
+            .expect("@PG line present");
+        assert!(
+            pg.starts_with("@PG\tID:bwa-rs\tPN:bwa-rs\tVN:"),
+            "bwa-style @PG"
+        );
+        assert!(
+            pg.contains("\tCL:bwa-rs mem -R ref.fa -1 r1.fq -2 r2.fq"),
+            "@PG records the command line"
+        );
+        assert!(
+            pg.contains(&format!("\tVN:{}\t", env!("CARGO_PKG_VERSION"))),
+            "@PG version comes from crate version"
+        );
     }
 }
