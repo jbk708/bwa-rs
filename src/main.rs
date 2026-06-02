@@ -1,9 +1,11 @@
 //! BWA-MEM CLI
 
 use clap::Parser;
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use bwa_mem::paired::{is_proper_pair, mate_fields, pair_insert_size, InsertSizeDistribution};
+use bwa_mem::sam::write_paired_record as sam_write_paired;
 use bwa_mem::types::AlignmentResult;
 use bwa_mem::{
     fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, Reference, ThreadPoolConfig,
@@ -96,9 +98,9 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         .min_score(args.min_score);
 
     let mut output: Box<dyn Write> = if args.output.to_string_lossy() == "-" {
-        Box::new(std::io::stdout())
+        Box::new(BufWriter::new(std::io::stdout()))
     } else {
-        Box::new(std::fs::File::create(&args.output)?)
+        Box::new(BufWriter::new(std::fs::File::create(&args.output)?))
     };
 
     write_header(&mut output, &reference)?;
@@ -114,25 +116,47 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     let iter = read1_reader.into_iter();
 
     if let Some(r2) = read2_reader {
+        // Two-phase: align all pairs and estimate the insert-size distribution first,
+        // then emit records so proper-pair flags reflect the full dataset.
         let mut r2_iter = r2.into_iter();
+        type PairBuf = Vec<(String, AlignmentResult, Option<(String, AlignmentResult)>)>;
+        let mut buf: PairBuf = Vec::new();
+        let mut dist = InsertSizeDistribution::new();
+
         for r in iter {
             let r1 = r?;
             let r2_record = r2_iter.next().transpose()?;
-
             let seq1 = r1.to_sequence();
-
             let result1 = aligner.align_single(&seq1.bases)?;
-            write_sam_record(&mut output, &r1.qname, &result1, false)?;
 
-            if let Some(r2) = r2_record {
-                let seq2 = r2.to_sequence();
+            let pair = if let Some(r2_rec) = r2_record {
+                let seq2 = r2_rec.to_sequence();
                 let result2 = aligner.align_single(&seq2.bases)?;
-                write_sam_record(&mut output, &r2.qname, &result2, true)?;
-            }
+                if let Some(isize) = pair_insert_size(&result1, &result2) {
+                    dist.add(isize);
+                }
+                Some((r2_rec.qname, result2))
+            } else {
+                None
+            };
+
+            buf.push((r1.qname, result1, pair));
 
             count += 1;
             if count.is_multiple_of(10000) {
                 eprintln!("Processed {} read pairs", count);
+            }
+        }
+
+        for (qname1, result1, pair) in buf {
+            if let Some((qname2, result2)) = pair {
+                let proper = is_proper_pair(&result1, &result2, &dist);
+                let mf1 = mate_fields(&result1, &result2, true, proper);
+                let mf2 = mate_fields(&result2, &result1, false, proper);
+                sam_write_paired(&mut output, &qname1, &result1, &mf1)?;
+                sam_write_paired(&mut output, &qname2, &result2, &mf2)?;
+            } else {
+                write_sam_record(&mut output, &qname1, &result1, false)?;
             }
         }
     } else {
@@ -175,7 +199,7 @@ fn write_sam_record(
     result: &AlignmentResult,
     is_mate: bool,
 ) -> Result<(), BwaError> {
-    let mapped = !result.cigar.ops.is_empty() && (result.flag & 0x4) == 0;
+    let mapped = !result.cigar.ops.is_empty() && !result.is_unmapped();
     let mut flag = if mapped { 0 } else { 0x4 };
     if mapped && result.reverse_strand {
         flag |= 0x10; // SEQ is reverse-complemented relative to the reference
