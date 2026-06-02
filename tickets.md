@@ -354,14 +354,41 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   clip 5, min_score 30) already matched bwa-mem2 and are unchanged.
 
 ### T-015: MAPQ computation differs
-- **Status:** OPEN
+- **Status:** FIXED (branch `t015-mapq`)
 - **Severity:** medium
 - **Affected field(s):** MAPQ.
-- **Symptom:** `calculate_mapq` (`src/alignment.rs`) uses a second-best-seed ratio
+- **Symptom:** `calculate_mapq` (`src/alignment.rs`) used a second-best-seed ratio
   heuristic, not bwa-mem2's `mem_approx_mapq_se` formula (based on sub-optimal
-  score, seed coverage, etc.). Matches on the easy MAPQ-60 unique set but will
-  diverge elsewhere.
-- **Resolution:** Port bwa's MAPQ formula.
+  score, seed coverage, etc.). Because it only ever saw the single best chain its
+  effective output was MAPQ 60 for every mapped read; the rescue path used a
+  separate `rescue_mapq` linear placeholder. Matched on the easy MAPQ-60 unique set
+  but diverged on rescued mates and multi-mappers.
+- **Resolution:** Ported bwa's `mem_approx_mapq_se` as a pure `approx_mapq_se`
+  (`src/alignment.rs`) — the bwa-mem2 default `mapQ_coef_len = 50` branch, with
+  `csub`/`frac_rep` not modeled (treated as 0) — plus an `aligned_span` helper
+  (`l = max(query_core, ref_core)`). `align_read` now derives the suboptimal
+  alignment score `sub` (and `sub_n`) from the best-scoring secondary chain whose
+  placement does not overlap the primary (building up to `MAX_SUB_CHAINS = 32`
+  alternatives), then sets MAPQ via the formula; primary selection is unchanged, so
+  POS/CIGAR/FLAG are byte-identical. The dead `calculate_mapq` and the `rescue_mapq`
+  placeholder were removed; `rescue_mate` now uses the same formula. New unit tests
+  cover every formula branch (`approx_mapq_se_*`, `aligned_span_*`).
+  **Measured (chr1 / 300-uniq vs bwa-mem2, `bench/compare_t015{,_summary}.md`):** no
+  placement regressions (field divergence identical to T-019). The two mate-rescue
+  reads moved from the flat placeholder 12 to formula values tracking bwa-mem2
+  (`100124` 12→27 vs 30; `100170` 12→33 vs 59); the residual gap is the differing
+  CIGAR core (T-014/T-018), not the formula. On reads with **identical placement** in
+  the multi-mapper sub2k set (1376 reads) MAPQ exact-match vs bwa-mem2 went 72.5% →
+  72.7% and mean |MAPQ−bwa| 14.65 → 13.09.
+- **Residual (other root cause — follow-up):** 370/375 of the remaining
+  identically-placed MAPQ diffs are bwa-rs scoring *higher* (e.g. 60 vs 0) on
+  heavily soft-clipped reads whose aligned fragment is repetitive: bwa-mem2 finds the
+  secondary copy and grades MAPQ down, but bwa-rs's seeding surfaces no non-overlapping
+  secondary chain, so `sub = 0` → baseline → 60. The bottleneck is now
+  **secondary-hit detection in seeding** (the same machinery gating the deferred XS
+  tag, T-011), not the MAPQ formula. Paired-end MAPQ recalculation (`mem_sam_pe`) and
+  the repetitive-read seeding time/memory blow-up (pre-existing; T-013) are also
+  follow-ups.
 
 ### T-016: Header lines differ (@HD, @PG)
 - **Status:** FIXED (branch `t016-headers-t014-defaults`)
