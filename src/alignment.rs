@@ -6,6 +6,8 @@ use crate::fm_index::FMIndex;
 use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
 use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
 
+pub const DEFAULT_MIN_SCORE: i32 = 30;
+
 #[derive(Clone, Debug)]
 pub struct Scoring {
     pub match_score: i32,
@@ -33,6 +35,7 @@ pub struct Aligner {
     reference: Vec<u8>,
     scoring: Scoring,
     min_seed_len: usize,
+    min_score: i32,
 }
 
 impl Aligner {
@@ -42,11 +45,17 @@ impl Aligner {
             reference,
             scoring: Scoring::default(),
             min_seed_len: DEFAULT_MIN_SEED_LEN,
+            min_score: DEFAULT_MIN_SCORE,
         }
     }
 
     pub fn min_seed_len(mut self, len: usize) -> Self {
         self.min_seed_len = len;
+        self
+    }
+
+    pub fn min_score(mut self, score: i32) -> Self {
+        self.min_score = score;
         self
     }
 
@@ -83,7 +92,15 @@ impl Aligner {
             .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
             .ok_or_else(|| BwaError::Alignment("No valid chains".to_string()))?;
 
-        self.build_alignment(query, best_chain)
+        let result = self.build_alignment(query, best_chain)?;
+
+        // bwa's -T: alignments scoring below the threshold are reported unmapped
+        // rather than placing a low-quality partial hit.
+        if result.score < self.min_score {
+            return Ok(self.unmapped_result());
+        }
+
+        Ok(result)
     }
 
     fn build_alignment(
@@ -848,7 +865,7 @@ mod tests {
         let ref_data_len = ref_data.len();
         let index = FMIndex::build(&ref_seq);
         let index_for_check = index.clone();
-        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2).min_score(0);
 
         // Use AC which we know works with the simple search test
         let query = vec![0, 1]; // AC
@@ -883,7 +900,7 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
         let ref_data = ref_seq.as_slice().to_vec();
         let index = FMIndex::build(&ref_seq);
-        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2).min_score(0);
 
         // Use shorter query
         let query = vec![0, 1, 2, 3, 2]; // ACGTC
@@ -1038,7 +1055,7 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
         let ref_data = ref_seq.as_slice().to_vec();
         let index = FMIndex::build(&ref_seq);
-        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2).min_score(0);
 
         let query = vec![0, 1, 2, 3];
         let result = aligner.align_read(&query, None).unwrap();
@@ -1127,6 +1144,36 @@ mod tests {
             cigar_str.contains('S'),
             "CIGAR should contain soft-clip ops for mismatching ends. CIGAR: {}",
             cigar_str
+        );
+    }
+
+    #[test]
+    fn test_min_score_unmaps_low_scoring_alignment() {
+        let small_ref = "AAAAAGGGGAAAAACCCCAAAAA";
+        let ref_seq = Reference::parse_fasta(&format!(">test\n{}", small_ref)).unwrap();
+        let ref_data = ref_seq.as_slice().to_vec();
+        let index = FMIndex::build(&ref_seq);
+
+        let read = vec![0u8, 0, 2, 2, 2, 2, 0, 0, 0, 0, 0];
+
+        let mapped = Aligner::new(index.clone(), ref_data.clone())
+            .min_seed_len(3)
+            .min_score(0)
+            .align_read(&read, None)
+            .unwrap();
+        if mapped.flag & 0x4 != 0 {
+            return;
+        }
+
+        let filtered = Aligner::new(index, ref_data)
+            .min_seed_len(3)
+            .min_score(mapped.score + 1)
+            .align_read(&read, None)
+            .unwrap();
+        assert_eq!(
+            filtered.flag & 0x4,
+            0x4,
+            "alignment scoring below min_score should be reported unmapped"
         );
     }
 }

@@ -29,6 +29,11 @@ impl ParallelAligner {
         self
     }
 
+    pub fn min_score(mut self, score: i32) -> Self {
+        self.inner = self.inner.min_score(score);
+        self
+    }
+
     pub fn align_batch(&self, queries: &[&[u8]]) -> Vec<Result<AlignmentResult, BwaError>> {
         queries
             .par_iter()

@@ -23,7 +23,7 @@ fn create_test_aligner() -> (Aligner, Reference) {
     let reference = Reference::parse_fasta(TEST_REFERENCE).unwrap();
     let ref_slice = reference.as_slice();
     let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(4).min_score(0);
     (aligner, reference)
 }
 
@@ -178,7 +178,7 @@ fn test_perfect_match() -> Result<(), BwaError> {
     let reference = Reference::parse_fasta(TEST_REFERENCE)?;
     let ref_slice = reference.as_slice();
     let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(4);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(4).min_score(0);
 
     let seq = seq_to_bytes("ACGTACGT");
     let sequence = Sequence::new("query", seq.clone());
@@ -375,7 +375,7 @@ fn test_chr1_scaled_reference() -> Result<(), BwaError> {
 
     let ref_slice = reference.as_slice();
     let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(10);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(10).min_score(0);
 
     let read = seq_to_bytes("GGGGGGGGGGAAAAAAAA");
     let sequence = Sequence::new("scaled_read", read.clone());
@@ -434,7 +434,7 @@ fn test_compare_against_bwa_mem() -> Result<(), BwaError> {
     let reference = Reference::parse_fasta(TEST_REFERENCE)?;
     let ref_slice = reference.as_slice();
     let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(10);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(10).min_score(0);
 
     let read = seq_to_bytes(test_read);
     let sequence = Sequence::new("ref_read", read.clone());
@@ -539,7 +539,7 @@ fn test_cigar_query_length_valid() -> Result<(), BwaError> {
     let reference = Reference::parse_fasta(&format!(">test\n{}", small_ref))?;
     let ref_slice = reference.as_slice();
     let index = FMIndex::build(&reference);
-    let aligner = Aligner::new(index, ref_slice).min_seed_len(3);
+    let aligner = Aligner::new(index, ref_slice).min_seed_len(3).min_score(0);
 
     let read = seq_to_bytes("GGGGAAAAACCCC");
     let read_len = read.len();
