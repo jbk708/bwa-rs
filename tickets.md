@@ -254,24 +254,39 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   offset 0).
 
 ### T-009: SEQ and QUAL emitted as `*`
-- **Status:** OPEN
+- **Status:** FIXED (branch `t009-t010-seq-qual-cigar`, bundled with T-010)
 - **Severity:** high
 - **Affected field(s):** SEQ, QUAL.
-- **Symptom:** Every record has SEQ `*` and QUAL `*`; bwa-mem2 emits the read
+- **Symptom:** Every record had SEQ `*` and QUAL `*`; bwa-mem2 emits the read
   sequence (reverse-complemented on the 0x10 strand) and qualities.
-- **Suspected cause:** `src/main.rs write_sam_record` hardcodes `"*"`.
-- **Resolution:** Emit the read sequence/qualities (revcomp + reversed QUAL on the
-  reverse strand; hard-clipped bases excluded per CIGAR).
+- **Cause:** `write_sam_record` (`src/main.rs`) and `write_paired_record`
+  (`src/sam.rs`) hardcoded `"*"`, and the buffered paired loop dropped the read
+  bases/qualities before the emit pass.
+- **Resolution:** Added `oriented_seq_qual(bases, qual, reverse)` in `src/sam.rs`,
+  which decodes the 2-bit read bases to SEQ and orients to the reference strand
+  (reverse-complement SEQ + reversed QUAL when `reverse_strand`); empty qual → `*`.
+  Threaded the read bases + raw quality string through both writers; the paired
+  loop now buffers a `ReadAln { qname, bases, qual, result }` so the emit pass has
+  the sequence. **Measured (chr1 / 300-uniq vs bwa-mem2): SEQ 100% → 0.5% (3/600),
+  QUAL 100% → 0.5%.** The residual 3 are T-019 mate-rescue reads bwa-mem2 places on
+  the opposite strand (the A/B sequences are reverse complements) — an alignment
+  difference, not a SEQ bug.
 
 ### T-010: CIGAR uses `=`/`X` instead of `M`
-- **Status:** OPEN
+- **Status:** FIXED (branch `t009-t010-seq-qual-cigar`, bundled with T-009)
 - **Severity:** medium
 - **Affected field(s):** CIGAR.
-- **Symptom:** bwa-rs emits `151=` / `43=7X…`; bwa-mem2 collapses matches and
+- **Symptom:** bwa-rs emitted `151=` / `43=7X…`; bwa-mem2 collapses matches and
   mismatches to `M` (`151M`).
-- **Suspected cause:** The aligner builds `Eq`/`X` ops and does not collapse them.
-- **Resolution:** Collapse `=`/`X` into `M` for output (or add a CIGAR mode);
-  trivial post-processing of `Cigar`.
+- **Cause:** The aligner builds `Eq`/`X` ops and the writers rendered them via
+  `Display` (which keeps `=`/`X`).
+- **Resolution:** Added `Cigar::to_sam_string()` (`src/types.rs`) — renders `=`,
+  `X`, and `M` all as `M` with adjacent runs merged, other operators unchanged —
+  and switched both SAM record writers to it. `Display for Cigar` is unchanged
+  (`=`/`X`), so internal callers and tests that rely on operator-level CIGAR are
+  untouched. **Measured (chr1 / 300-uniq vs bwa-mem2): CIGAR 99.3% → 5.3% (32/600),
+  `=`/`X` CIGARs 594 → 0.** The residual 32 are 1–3 bp boundary shifts owned by
+  T-018 (banded SW), not CIGAR formatting.
 
 ### T-011: Optional tags missing (NM, MD, AS, XS, …)
 - **Status:** OPEN
