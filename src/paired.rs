@@ -19,6 +19,8 @@ pub struct MateFields {
     /// When this read is unmapped and the mate is mapped, the mate's 0-based position
     /// is placed here so the CLI can use it as this read's POS.
     pub placed_pos: Option<usize>,
+    /// Mate's CIGAR in SAM M-form (MC:Z), present only when the mate is mapped.
+    pub mc: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -275,12 +277,19 @@ pub fn mate_fields(
         None
     };
 
+    let mc = if mate_unmapped {
+        None
+    } else {
+        Some(mate.cigar.to_sam_string())
+    };
+
     MateFields {
         flag,
         rnext,
         pnext,
         tlen,
         placed_pos,
+        mc,
     }
 }
 
@@ -504,6 +513,11 @@ mod tests {
         assert_eq!(mf1.rnext, "=");
         assert_eq!(mf1.pnext, 201);
         assert_eq!(mf1.placed_pos, None);
+        assert_eq!(
+            mf1.mc,
+            Some("100M".to_string()),
+            "r2 is mapped so mc is Some"
+        );
 
         let mf2 = mate_fields(&r2, &r1, false, proper);
         assert_eq!(mf2.flag & 0x1, 0x1, "paired bit always set");
@@ -517,6 +531,11 @@ mod tests {
         assert_eq!(mf2.rnext, "=");
         assert_eq!(mf2.pnext, 101);
         assert_eq!(mf2.placed_pos, None);
+        assert_eq!(
+            mf2.mc,
+            Some("100M".to_string()),
+            "r1 is mapped so mc is Some"
+        );
     }
 
     #[test]
@@ -555,6 +574,7 @@ mod tests {
         assert_eq!(mf1.rnext, "=", "unmapped mate placed at read's coord");
         assert_eq!(mf1.pnext, 101, "pnext = read's 1-based pos");
         assert_eq!(mf1.placed_pos, None, "mapped read has no placed_pos");
+        assert_eq!(mf1.mc, None, "mate is unmapped so mc is None");
 
         let mf2 = mate_fields(&r2, &r1, false, false);
         assert_eq!(mf2.flag & 0x4, 0x4, "this read is unmapped");
@@ -565,6 +585,11 @@ mod tests {
             mf2.placed_pos,
             Some(100),
             "unmapped read inherits mate's 0-based pos"
+        );
+        assert_eq!(
+            mf2.mc,
+            Some("100M".to_string()),
+            "mate (r1) is mapped so mc is Some"
         );
     }
 
@@ -580,6 +605,7 @@ mod tests {
         assert_eq!(mf1.pnext, 0);
         assert_eq!(mf1.tlen, 0);
         assert_eq!(mf1.placed_pos, None);
+        assert_eq!(mf1.mc, None, "both unmapped so mc is None");
     }
 
     #[test]
