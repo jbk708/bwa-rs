@@ -55,6 +55,10 @@ struct MemArgs {
     /// Number of threads (default: auto-detect)
     #[arg(short = 't', default_value = "0")]
     pub threads: u32,
+
+    /// Minimum alignment score to output (default: 30)
+    #[arg(short = 'T', default_value = "30")]
+    pub min_score: i32,
 }
 
 fn main() -> Result<(), BwaError> {
@@ -87,8 +91,9 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     let ref_data = reference.as_slice_2n();
     let index = FMIndex::build_2n(&reference);
 
-    let aligner =
-        ParallelAligner::new(index, ref_data.to_vec()).min_seed_len(args.min_seed_len as usize);
+    let aligner = ParallelAligner::new(index, ref_data.to_vec())
+        .min_seed_len(args.min_seed_len as usize)
+        .min_score(args.min_score);
 
     let mut output: Box<dyn Write> = if args.output.to_string_lossy() == "-" {
         Box::new(std::io::stdout())

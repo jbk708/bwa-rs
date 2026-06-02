@@ -6,12 +6,15 @@ use crate::fm_index::FMIndex;
 use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
 use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
 
+pub const DEFAULT_MIN_SCORE: i32 = 30;
+
 #[derive(Clone, Debug)]
 pub struct Scoring {
     pub match_score: i32,
     pub mismatch_penalty: i32,
     pub gap_open: i32,
     pub gap_extend: i32,
+    pub clip_penalty: i32,
 }
 
 impl Default for Scoring {
@@ -21,6 +24,7 @@ impl Default for Scoring {
             mismatch_penalty: 4,
             gap_open: 6,
             gap_extend: 1,
+            clip_penalty: 5,
         }
     }
 }
@@ -31,6 +35,7 @@ pub struct Aligner {
     reference: Vec<u8>,
     scoring: Scoring,
     min_seed_len: usize,
+    min_score: i32,
 }
 
 impl Aligner {
@@ -40,11 +45,17 @@ impl Aligner {
             reference,
             scoring: Scoring::default(),
             min_seed_len: DEFAULT_MIN_SEED_LEN,
+            min_score: DEFAULT_MIN_SCORE,
         }
     }
 
     pub fn min_seed_len(mut self, len: usize) -> Self {
         self.min_seed_len = len;
+        self
+    }
+
+    pub fn min_score(mut self, score: i32) -> Self {
+        self.min_score = score;
         self
     }
 
@@ -81,7 +92,15 @@ impl Aligner {
             .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
             .ok_or_else(|| BwaError::Alignment("No valid chains".to_string()))?;
 
-        self.build_alignment(query, best_chain)
+        let result = self.build_alignment(query, best_chain)?;
+
+        // bwa's -T: alignments scoring below the threshold are reported unmapped
+        // rather than placing a low-quality partial hit.
+        if result.score < self.min_score {
+            return Ok(self.unmapped_result());
+        }
+
+        Ok(result)
     }
 
     fn build_alignment(
@@ -111,8 +130,14 @@ impl Aligner {
             bw,
         );
 
+        let leading_clip = seed.query_start - backward.query_end;
+        let trailing_clip = (query_len - seed.query_end()) - forward.query_end;
+
         let mut cigar = Cigar::new();
 
+        if leading_clip > 0 {
+            cigar.push(CigarOp::S, leading_clip as u32);
+        }
         if backward.query_end > 0 {
             cigar.extend(backward.cigar);
         }
@@ -121,6 +146,9 @@ impl Aligner {
 
         if forward.query_end > 0 {
             cigar.extend(forward.cigar);
+        }
+        if trailing_clip > 0 {
+            cigar.push(CigarOp::S, trailing_clip as u32);
         }
 
         let ref_start = seed.ref_start.saturating_sub(backward.query_end);
@@ -140,11 +168,7 @@ impl Aligner {
         let ref_len = cigar.reference_length();
         let (position, reverse_strand, cigar) = if n_fwd > 0 && ref_start >= n_fwd {
             let fwd_pos = (2 * n_fwd).saturating_sub(ref_start + ref_len);
-            let mut rev = Cigar::new();
-            for &(op, len) in cigar.ops.iter().rev() {
-                rev.push(op, len);
-            }
-            (fwd_pos, true, rev)
+            (fwd_pos, true, cigar.reversed())
         } else {
             (ref_start, false, cigar)
         };
@@ -187,6 +211,9 @@ impl Aligner {
                 CigarOp::D => {
                     nm += *len;
                     r_pos += *len as usize;
+                }
+                CigarOp::S => {
+                    q_pos += *len as usize;
                 }
                 _ => {}
             }
@@ -231,6 +258,9 @@ impl Aligner {
                     score -=
                         self.scoring.gap_open + (*len as i32 - 1).max(0) * self.scoring.gap_extend;
                     r_pos += *len as usize;
+                }
+                CigarOp::S => {
+                    q_pos += *len as usize;
                 }
                 _ => {}
             }
@@ -405,10 +435,7 @@ pub fn extend_seed_backward(
     scoring: &Scoring,
     bandwidth: usize,
 ) -> SeedExtension {
-    let query_len = query.len();
-    let ref_len = reference.len();
-
-    if query_len == 0 || ref_len == 0 || seed_end == 0 {
+    if query.is_empty() || seed_end == 0 {
         return SeedExtension {
             score: 0,
             query_end: 0,
@@ -417,87 +444,23 @@ pub fn extend_seed_backward(
         };
     }
 
-    let actual_bw = bandwidth.clamp(1, 256);
-    let mut best_score = 0;
-    let mut best_j = 0;
+    let bw = bandwidth.clamp(1, 256);
+    let span = (query.len() + bw + 1).min(seed_end);
 
-    for d in 0..=actual_bw {
-        for ref_pos in [
-            seed_end.saturating_sub(d),
-            seed_end.saturating_sub(d.saturating_sub(1)),
-        ] {
-            if ref_pos == 0 || ref_pos >= ref_len {
-                continue;
-            }
+    let ref_rev: Vec<u8> = reference[seed_end - span..seed_end]
+        .iter()
+        .rev()
+        .copied()
+        .collect();
+    let q_rev: Vec<u8> = query.iter().rev().copied().collect();
 
-            let j_max = query_len.min(d + 1);
-
-            for j in 1..=j_max {
-                let ref_idx = ref_pos.saturating_sub(j);
-                if ref_idx >= ref_len {
-                    continue;
-                }
-
-                let score = if j <= query_len && query[j - 1] == reference[ref_idx] {
-                    scoring.match_score
-                } else {
-                    scoring.mismatch_penalty
-                };
-
-                if score > best_score {
-                    best_score = score;
-                    best_j = j;
-                } else if score == best_score && score > 0 && j > best_j {
-                    best_j = j;
-                }
-            }
-        }
-    }
-
-    let mut cigar = Cigar::new();
-    let mut last_op = CigarOp::Eq; // Start assuming match
-    let mut last_len = 0u32;
-
-    if best_j > 0 {
-        let ref_start = seed_end.saturating_sub(best_j);
-        let mut offset = 0;
-        for &base in query.iter().take(best_j) {
-            let ref_idx = ref_start + offset;
-            if ref_idx >= ref_len {
-                offset += 1;
-                continue;
-            }
-            let op = if base == reference[ref_idx] {
-                CigarOp::Eq
-            } else {
-                CigarOp::X
-            };
-            if op != last_op {
-                if last_len > 0 {
-                    cigar.push(last_op, last_len);
-                }
-                last_op = op;
-                last_len = 1;
-            } else {
-                last_len += 1;
-            }
-            offset += 1;
-        }
-    }
-
-    if last_len > 0 {
-        cigar.push(last_op, last_len);
-    }
-
-    if cigar.ops.is_empty() {
-        cigar.push(CigarOp::Eq, 0);
-    }
+    let ext = affine_extend_forward(&q_rev, &ref_rev, 0, scoring, bandwidth);
 
     SeedExtension {
-        score: best_score,
-        query_end: best_j,
-        ref_end: seed_end.saturating_sub(best_j),
-        cigar,
+        score: ext.score,
+        query_end: ext.query_end,
+        ref_end: seed_end.saturating_sub(ext.ref_end),
+        cigar: ext.cigar.reversed(),
     }
 }
 
@@ -602,9 +565,15 @@ pub fn affine_extend_forward(
     dp.set_x(0, 0, i32::MIN / 2);
     dp.set_g(0, 0, i32::MIN / 2);
 
+    let mut best_score = i32::MIN;
+    let mut best_i = 0;
+    let mut best_j = 0;
+    let mut gscore = i32::MIN;
+    let mut gscore_j = 0usize;
+
     for i in 1..=query_len {
         let j_start = 1.max(i.saturating_sub(bw));
-        let j_end = (i + bw).min(actual_ref_len).min(actual_ref_len);
+        let j_end = (i + bw).min(actual_ref_len);
 
         for j in j_start..=j_end {
             let is_match = query[i - 1] == reference[start_pos + j - 1];
@@ -630,33 +599,32 @@ pub fn affine_extend_forward(
             let g_open = dp.m_at(i, j - 1).saturating_sub(scoring.gap_open);
             let g_extend = dp.g_at(i, j - 1).saturating_sub(scoring.gap_extend);
             dp.set_g(i, j, g_open.max(g_extend));
-        }
-    }
 
-    let mut best_score = i32::MIN;
-    let mut best_i = 0;
-    let mut best_j = 0;
-
-    // Search all computed cells for the best score
-    for i in 1..=query_len {
-        let j_start = 1.max(i.saturating_sub(bw));
-        let j_end = (i + bw).min(actual_ref_len).min(actual_ref_len);
-        for j in j_start..=j_end {
-            let score = dp.m_at(i, j).max(dp.x_at(i, j)).max(dp.g_at(i, j));
+            let score = m_val.max(dp.x_at(i, j)).max(dp.g_at(i, j));
             if score > best_score {
                 best_score = score;
                 best_i = i;
                 best_j = j;
             }
+            if i == query_len && score > gscore {
+                gscore = score;
+                gscore_j = j;
+            }
         }
     }
 
-    let cigar = traceback_affine(&dp, query, reference, start_pos, best_i, best_j, scoring);
+    let (end_i, end_j, end_score) = if gscore > 0 && gscore > best_score - scoring.clip_penalty {
+        (query_len, gscore_j, gscore)
+    } else {
+        (best_i, best_j, best_score)
+    };
+
+    let cigar = traceback_affine(&dp, query, reference, start_pos, end_i, end_j, scoring);
 
     SeedExtension {
-        score: best_score,
-        query_end: best_i,
-        ref_end: start_pos + best_j,
+        score: end_score,
+        query_end: end_i,
+        ref_end: start_pos + end_j,
         cigar,
     }
 }
@@ -789,7 +757,7 @@ mod tests {
         let scoring = Scoring::default();
 
         let ext = extend_seed_backward(&query, &reference, 6, &scoring, 16);
-        assert!(ext.score >= 0);
+        assert!(ext.ref_end <= 6);
     }
 
     #[test]
@@ -897,7 +865,7 @@ mod tests {
         let ref_data_len = ref_data.len();
         let index = FMIndex::build(&ref_seq);
         let index_for_check = index.clone();
-        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2).min_score(0);
 
         // Use AC which we know works with the simple search test
         let query = vec![0, 1]; // AC
@@ -932,7 +900,7 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
         let ref_data = ref_seq.as_slice().to_vec();
         let index = FMIndex::build(&ref_seq);
-        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2).min_score(0);
 
         // Use shorter query
         let query = vec![0, 1, 2, 3, 2]; // ACGTC
@@ -1087,7 +1055,7 @@ mod tests {
         let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
         let ref_data = ref_seq.as_slice().to_vec();
         let index = FMIndex::build(&ref_seq);
-        let aligner = Aligner::new(index, ref_data).min_seed_len(2);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(2).min_score(0);
 
         let query = vec![0, 1, 2, 3];
         let result = aligner.align_read(&query, None).unwrap();
@@ -1099,6 +1067,113 @@ mod tests {
             result.md_tag.as_ref().unwrap().starts_with("MD:Z:"),
             "{}",
             result.md_tag.unwrap()
+        );
+    }
+
+    #[test]
+    fn test_affine_clip_trailing_mismatches() {
+        let reference = vec![0u8, 1, 2, 3, 0, 1, 2];
+        let query = vec![0u8, 1, 2, 3, 3, 3, 3];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        assert_eq!(
+            ext.query_end, 4,
+            "trailing 3 bases should be clipped, query_end should be 4"
+        );
+        assert_eq!(
+            ext.cigar.to_string(),
+            "4=",
+            "cigar should be 4= for the 4 matching bases"
+        );
+    }
+
+    #[test]
+    fn test_affine_extend_through_single_tail_mismatch() {
+        let reference = vec![0u8, 1, 2, 3, 0, 1, 2, 3];
+        let query = vec![0u8, 1, 2, 3, 0, 1, 3];
+        let scoring = Scoring::default();
+
+        let ext = affine_extend_forward(&query, &reference, 0, &scoring, 16);
+        assert_eq!(
+            ext.query_end, 7,
+            "should extend through single tail mismatch, query_end should be 7"
+        );
+        assert_eq!(ext.cigar.to_string(), "6=1X", "cigar should be 6=1X");
+    }
+
+    #[test]
+    fn test_align_read_emits_soft_clips() {
+        let small_ref = "AAAAAGGGGAAAAACCCCAAAAA";
+        let ref_seq = Reference::parse_fasta(&format!(">test\n{}", small_ref)).unwrap();
+        let ref_slice = ref_seq.as_slice();
+        let ref_data = ref_slice.to_vec();
+        let index = FMIndex::build(&ref_seq);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(3);
+
+        let read_str = "TTTTGGGGAAAAACCCCTTTT";
+        let read: Vec<u8> = read_str
+            .bytes()
+            .map(|b| match b {
+                b'A' => 0,
+                b'C' => 1,
+                b'G' => 2,
+                b'T' => 3,
+                _ => 4,
+            })
+            .collect();
+        let read_len = read.len();
+
+        let result = aligner.align_read(&read, None).unwrap();
+
+        if result.flag & 0x4 != 0 {
+            return;
+        }
+
+        assert_eq!(
+            result.cigar.query_length(),
+            read_len,
+            "CIGAR query-consumed length {} must equal read length {}. CIGAR: {}",
+            result.cigar.query_length(),
+            read_len,
+            result.cigar
+        );
+
+        let cigar_str = result.cigar.to_string();
+        assert!(
+            cigar_str.contains('S'),
+            "CIGAR should contain soft-clip ops for mismatching ends. CIGAR: {}",
+            cigar_str
+        );
+    }
+
+    #[test]
+    fn test_min_score_unmaps_low_scoring_alignment() {
+        let small_ref = "AAAAAGGGGAAAAACCCCAAAAA";
+        let ref_seq = Reference::parse_fasta(&format!(">test\n{}", small_ref)).unwrap();
+        let ref_data = ref_seq.as_slice().to_vec();
+        let index = FMIndex::build(&ref_seq);
+
+        let read = vec![0u8, 0, 2, 2, 2, 2, 0, 0, 0, 0, 0];
+
+        let mapped = Aligner::new(index.clone(), ref_data.clone())
+            .min_seed_len(3)
+            .min_score(0)
+            .align_read(&read, None)
+            .unwrap();
+        if mapped.flag & 0x4 != 0 {
+            return;
+        }
+
+        let filtered = Aligner::new(index, ref_data)
+            .min_seed_len(3)
+            .min_score(mapped.score + 1)
+            .align_read(&read, None)
+            .unwrap();
+        assert_eq!(
+            filtered.flag & 0x4,
+            0x4,
+            "alignment scoring below min_score should be reported unmapped"
         );
     }
 }

@@ -125,6 +125,25 @@ impl Cigar {
             .sum()
     }
 
+    pub fn query_length(&self) -> usize {
+        self.ops
+            .iter()
+            .filter(|(op, _)| {
+                matches!(
+                    op,
+                    CigarOp::M | CigarOp::I | CigarOp::S | CigarOp::Eq | CigarOp::X
+                )
+            })
+            .map(|(_, len)| *len as usize)
+            .sum()
+    }
+
+    pub fn reversed(&self) -> Cigar {
+        Cigar {
+            ops: self.ops.iter().rev().copied().collect(),
+        }
+    }
+
     pub fn extend(&mut self, other: Cigar) {
         if other.ops.is_empty() {
             return;
@@ -301,6 +320,9 @@ impl AlignmentResult {
                     r_pos += *len as usize;
                 }
                 CigarOp::I => {
+                    q_pos += *len as usize;
+                }
+                CigarOp::S => {
                     q_pos += *len as usize;
                 }
                 _ => {}

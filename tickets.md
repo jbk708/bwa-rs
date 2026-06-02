@@ -6,12 +6,24 @@ against `human_g1k_v37.fasta`).
 
 **Status:** In progress (2026-06-01). Two blockers and one OOM resolved
 (T-002, T-003, T-004 — see PR `fix-oom-and-64bit`); bwa-rs can now index the full
-human genome and map both strands. Remaining output-divergence gaps are ticketed
-below (T-005…T-016), ordered roughly by impact toward byte-identical SAM.
+human genome and map both strands. Soft-clipping (T-005) and a minimum-score
+filter (T-017) are now also resolved. Remaining output-divergence gaps are
+ticketed below, ordered roughly by impact toward byte-identical SAM.
 
 **Verification baseline:** chr1 (249 Mbp), 300 uniquely-mapping read pairs from
-SRR7733443. After T-004, strand flag (0x10) matches bwa-mem2 **297/297**; POS
-matches **246/297** (remainder driven by T-005 soft-clipping).
+SRR7733443, normalized QNAMEs, `-k 19`. POS field matches:
+- After T-004: **246/300**.
+- After T-005 (soft-clipping): **284/300**.
+
+The residual **16/300** POS mismatches break down into three independent causes
+(none inside soft-clipping itself):
+- **~10** — rigid seed anchoring: bwa-mem2 runs banded Smith-Waterman that can
+  shift the alignment 1–10 bp relative to the seed (placing a read full-length
+  where bwa-rs pins the seed and soft-clips the overhang). See **T-018**.
+- **3** — low-scoring partial hits bwa-mem2 rejects. T-017 now reports these
+  unmapped (matching bwa-mem2's mapped/unmapped status), but their residual
+  POS/FLAG fields are the unmapped-mate convention owned by **T-007**.
+- **3** — reads bwa-mem2 maps via mate rescue that bwa-rs leaves unmapped. **T-007**.
 
 ---
 
@@ -152,18 +164,25 @@ These are hypotheses to confirm/refute once real diffs are observed:
 Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
 
 ### T-005: No soft-clipping — end-to-end alignment shifts POS and CIGAR
-- **Status:** OPEN
+- **Status:** FIXED (PR stacked on `fix-oom-and-64bit`, branch `t005-soft-clipping`)
 - **Severity:** high (largest remaining POS/CIGAR driver)
 - **Affected field(s):** POS, CIGAR.
-- **Symptom:** bwa-rs forces a full-length alignment with `=`/`X` runs
+- **Symptom:** bwa-rs forced a full-length alignment with `=`/`X` runs
   (e.g. `43=7X1=14X…`) where bwa-mem2 soft-clips poor ends (`33S66M52S`). POS then
-  starts further right. Accounts for the 51/297 POS mismatches (off by 1–40 bp).
-- **Suspected cause:** Seed extension (`src/alignment.rs build_alignment` /
-  `affine_extend_forward`) always extends to the read ends instead of stopping at
-  the max-scoring position and emitting `S` for the trimmed tail (bwa's local /
-  Smith-Waterman behavior with a clip penalty).
-- **Resolution:** Implement local-extension clipping: track the best-scoring cell,
-  truncate the alignment there, and emit leading/trailing `S` ops.
+  started further right. Accounted for the bulk of the POS mismatches (off by 1–40 bp).
+- **Cause:** Seed extension (`src/alignment.rs build_alignment` /
+  `affine_extend_forward`) always extended to the read ends instead of stopping at
+  the max-scoring position and emitting `S` for the trimmed tail.
+- **Resolution:** Added `clip_penalty` (default 5) to `Scoring`. `affine_extend_forward`
+  tracks the best query-end-reaching score (`gscore`) alongside the local max and
+  extends to the read end only when that costs less than `clip_penalty`; otherwise it
+  stops at the max-scoring cell. `extend_seed_backward` reuses the forward DP on
+  reversed slices so the 5′ end clips identically. `build_alignment` emits
+  leading/trailing `S` so the CIGAR query length equals the read length.
+  **POS 246 → 284/300.** Soft-clip lengths now match bwa-mem2 wherever the placement
+  agrees (e.g. `4S147M` ↔ `4S8=1X19=…`, `98M53S` ↔ `80=1X17=53S`).
+- **Note:** The residual `=`/`X`-vs-`M` CIGAR string diff is **T-010**; the residual
+  1–10 bp POS placement diffs are **T-018** (banded SW), not soft-clipping.
 
 ### T-006: QNAME not truncated at first whitespace
 - **Status:** OPEN
@@ -277,3 +296,45 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
 - **Resolution:** Match bwa-mem2's header emission (drop @HD or match SO; emit a
   bwa-style @PG with the real command line). Note byte-identical @PG also requires
   matching the recorded command line.
+
+### T-017: No minimum-score filter — low-scoring partial hits reported instead of unmapped
+- **Status:** FIXED (branch `t017-min-score`, stacked on `t005-soft-clipping`)
+- **Severity:** medium
+- **Affected field(s):** FLAG (0x4), CIGAR, POS, RNAME (mapped-vs-unmapped status).
+- **Symptom:** bwa-rs reported a low-quality partial alignment (e.g. a ~20 bp
+  aligned core buried in soft-clips, `83S1X22=1X44S`, score ≈ 14) at a junk locus
+  where bwa-mem2 reports the read unmapped. 3/300 of the chr1 verification reads.
+- **Cause:** `align_read` returned `build_alignment`'s result unconditionally; bwa
+  drops alignments scoring below `-T` (default 30).
+- **Resolution:** Added `min_score` (default `DEFAULT_MIN_SCORE = 30`) to `Aligner`
+  with a builder and a `-T` CLI flag; `align_read` returns `unmapped_result()` when
+  the best alignment scores below it. The 3 reads now report unmapped, matching
+  bwa-mem2's mapped/unmapped status and `*` CIGAR.
+- **Note:** Their residual POS/FLAG fields still differ because bwa-mem2 assigns an
+  unmapped read its mapped mate's POS and the paired FLAG bits — that is the
+  unmapped-mate convention owned by **T-007**, not this ticket.
+
+### T-018: Rigid seed anchoring prevents seed-relative shift (needs banded Smith-Waterman)
+- **Status:** OPEN
+- **Severity:** high (largest remaining POS driver after T-005)
+- **Affected field(s):** POS, CIGAR.
+- **Symptom:** bwa-mem2 reports a read full-length and shifted 1–10 bp relative to
+  bwa-rs (e.g. bwa-mem2 `151M` at POS p−1 where bwa-rs emits `1S150=` at p, or
+  bwa-mem2 `15S136M` where bwa-rs keeps a boundary mismatch). ~10/300 of the chr1
+  verification reads; POS off by 1–10 bp.
+- **Cause:** `build_alignment` treats the seed as immovable — it forces the seed
+  bases as `Eq` and only extends outward from the seed boundaries
+  (`extend_seed_backward` / `affine_extend_forward`). bwa-mem2 uses the seed only to
+  center a DP band and runs full banded Smith-Waterman over the whole read, so the
+  optimal alignment can shift within the band. A read that scores higher placed 1 bp
+  left (aligning full-length) is found by bwa-mem2 but not by the seed-pinned
+  extension.
+- **Investigation:** Confirmed by instrumenting the extension on a 6 kb window:
+  affected reads have a correct local extension, but the seed anchor is 1–10 bp off
+  the placement bwa-mem2's global-in-band alignment picks. A zero-length-baseline
+  tweak to the extension fixed the all-junk-tail subset but regressed the
+  full-length subset (16 → 20), confirming the divergence is the rigid anchor, not
+  the clip arithmetic.
+- **Resolution:** Replace seed-pinned outward extension with a single banded
+  Smith-Waterman over the read, centered on the seed/chain (bwa `ksw` style); related
+  to scoring defaults (T-014) and MAPQ (T-015).
