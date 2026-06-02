@@ -327,13 +327,32 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   format (≤4.29 Gbp); unify or document.
 
 ### T-013: CLI alignment is single-threaded
-- **Status:** OPEN
+- **Status:** FIXED (branch `t013-parallel-align`)
 - **Severity:** medium (perf)
-- **Symptom:** `-t` only sizes the rayon pool used for SA construction; the read
-  loop in `run_mem` (`src/main.rs`) aligns one read at a time. bwa-mem2 aligned
-  200k pairs in ~9 s on 16 threads.
-- **Resolution:** Batch reads and use the existing `ParallelAligner::align_batch`
-  (rayon `par_iter`) instead of the sequential loop.
+- **Symptom:** `-t` only sized the rayon pool used for SA construction; the read
+  loop in `run_mem` (`src/main.rs`) aligned one read at a time via `align_single`.
+  bwa-mem2 aligned 200k pairs in ~9 s on 16 threads.
+- **Resolution:** `run_mem` now drives the existing `ParallelAligner::align_batch`
+  (rayon `par_iter`) instead of the per-read loop. The paired path reads the whole
+  file into owned `RawRead`s, flattens to one ordered query list (read1 then read2
+  per pair), aligns the entire batch in parallel, then walks the results back in
+  order to rebuild the two-phase `buf` and accumulate the `InsertSizeDistribution`
+  (the whole file must be buffered here — proper-pair/`pair_mapq` need the complete
+  distribution, so it cannot be chunked). The single-end path aligns in
+  `BATCH_SIZE = 65536` chunks to bound memory. `par_iter().collect()` preserves
+  input order, so emit order — and thus output — is unchanged. A small `align_all`
+  helper unwraps `Vec<Result<…>>` → `Result<Vec<…>>` for both paths. `align_read`
+  is pure per-read (no mate context passed, matching the prior `align_single`), so
+  results are identical; `align_batch_paired`/`align_batch_with_mates` were *not*
+  used because they pass mate context to `align_read` and would change output.
+- **Measured (chr1 / 300-uniq vs bwa-mem2, `bench/compare_t013.md`):** output is
+  **byte-identical to the T-022 baseline** (only the `@PG CL:` output-filename
+  field differs) — per-field divergence unchanged: POS 0, RNAME 0, RNEXT 0, PNEXT 0;
+  FLAG 4, CIGAR 4, TLEN 4, MAPQ 2, SEQ 2, QUAL 2. **Zero regressions.** All 324 unit
+  tests pass; `cargo clippy -- -D warnings` and `cargo fmt --check` clean.
+- **Note:** Wall time on this small set is dominated by the in-memory index rebuild
+  (T-012), not alignment; large-set throughput measurement remains gated on the
+  repetitive-read seeding blow-up (**T-023**).
 
 ### T-014: Scoring/seed defaults differ from bwa-mem2
 - **Status:** FIXED (branch `t016-headers-t014-defaults`)
