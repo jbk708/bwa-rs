@@ -1,5 +1,6 @@
 //! SAM format output generation.
 
+use crate::paired::MateFields;
 use crate::reference::Reference;
 use crate::types::{AlignmentResult, Sequence};
 use std::fmt;
@@ -203,6 +204,39 @@ impl SAMWriter {
     pub fn flush(&mut self) -> io::Result<()> {
         self.writer.flush()
     }
+}
+
+/// Writes a single paired-end alignment record to any `Write` sink.
+///
+/// Uses `MateFields` (pre-assembled by [`crate::paired::mate_fields`]) for all flag/rnext/pnext/tlen
+/// values so the caller does not need to recompute them. RNAME/POS follow the SAM
+/// unmapped-mate convention: an unmapped read whose mate is mapped inherits the mate's
+/// coordinate via `placed_pos` so coordinate-sorted tools can keep pairs adjacent.
+pub fn write_paired_record<W: Write>(
+    out: &mut W,
+    qname: &str,
+    result: &AlignmentResult,
+    mf: &MateFields,
+) -> io::Result<()> {
+    let mapped = !result.is_unmapped();
+    let (rname, pos, mapq): (&str, i64, u8) = if mapped {
+        ("ref", result.position as i64 + 1, result.mapq)
+    } else if let Some(p) = mf.placed_pos {
+        ("ref", p as i64 + 1, 0)
+    } else {
+        ("*", 0, 0)
+    };
+    let cigar = if mapped {
+        result.cigar.to_string()
+    } else {
+        "*".into()
+    };
+
+    writeln!(
+        out,
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t*\t*",
+        qname, mf.flag, rname, pos, mapq, cigar, mf.rnext, mf.pnext, mf.tlen
+    )
 }
 
 #[cfg(test)]

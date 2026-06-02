@@ -275,6 +275,10 @@ impl AlignmentResult {
         }
     }
 
+    pub fn is_unmapped(&self) -> bool {
+        self.flag & 0x4 != 0
+    }
+
     pub fn mdz_string(&self, read: &[u8], reference: &[u8]) -> String {
         let mut result = String::new();
         let mut q_pos = 0usize;

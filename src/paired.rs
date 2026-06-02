@@ -2,6 +2,22 @@
 
 use crate::types::{AlignmentResult, Orientation};
 
+/// Fully-assembled per-read mate fields for SAM output.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MateFields {
+    /// Fully assembled SAM flag for this read.
+    pub flag: u16,
+    /// RNEXT field: "=" when read and mate share reference coordinates, "*" otherwise.
+    pub rnext: &'static str,
+    /// 1-based mate POS to print; 0 when no coordinate is available.
+    pub pnext: i64,
+    /// Signed template length per bwa convention.
+    pub tlen: i64,
+    /// When this read is unmapped and the mate is mapped, the mate's 0-based position
+    /// is placed here so the CLI can use it as this read's POS.
+    pub placed_pos: Option<usize>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct InsertSizeDistribution {
     pub mean: f64,
@@ -127,6 +143,139 @@ pub fn pair_reads(
     paired
 }
 
+/// Returns true when both reads form a proper FR pair within the insert-size bounds.
+///
+/// Requires both reads to be mapped, on opposite strands, with the forward read's
+/// position not exceeding the reverse read's position, and an insert size within
+/// `[dist.lower_bound(), dist.upper_bound()]`.
+pub fn is_proper_pair(
+    read1: &AlignmentResult,
+    read2: &AlignmentResult,
+    dist: &InsertSizeDistribution,
+) -> bool {
+    if read1.is_unmapped() || read2.is_unmapped() {
+        return false;
+    }
+    if read1.reverse_strand == read2.reverse_strand {
+        return false;
+    }
+    let (fwd, rev) = if !read1.reverse_strand {
+        (read1, read2)
+    } else {
+        (read2, read1)
+    };
+    if fwd.position > rev.position {
+        return false;
+    }
+    match pair_insert_size(read1, read2) {
+        Some(isize) => isize >= dist.lower_bound() && isize <= dist.upper_bound(),
+        None => false,
+    }
+}
+
+/// Computes the signed template length for `read` given `mate`, using the bwa convention.
+///
+/// Returns 0 when either read is unmapped.
+pub fn template_length(read: &AlignmentResult, mate: &AlignmentResult) -> i64 {
+    if read.is_unmapped() || mate.is_unmapped() {
+        return 0;
+    }
+    let p0 = read.position as i64
+        + if read.reverse_strand {
+            (read.cigar.reference_length() as i64) - 1
+        } else {
+            0
+        };
+    let p1 = mate.position as i64
+        + if mate.reverse_strand {
+            (mate.cigar.reference_length() as i64) - 1
+        } else {
+            0
+        };
+    if p0 < p1 {
+        p1 - p0 + 1
+    } else if p0 > p1 {
+        -(p0 - p1 + 1)
+    } else {
+        0
+    }
+}
+
+/// Returns the outer-coordinate insert size when both reads are mapped.
+///
+/// Span is `max(end1, end2) - min(pos1, pos2)` using `reference_length` for ends.
+/// Returns `None` if either read is unmapped.
+pub fn pair_insert_size(read1: &AlignmentResult, read2: &AlignmentResult) -> Option<u32> {
+    if read1.is_unmapped() || read2.is_unmapped() {
+        return None;
+    }
+    let start1 = read1.position;
+    let end1 = read1.position + read1.cigar.reference_length();
+    let start2 = read2.position;
+    let end2 = read2.position + read2.cigar.reference_length();
+    let min_start = start1.min(start2);
+    let max_end = end1.max(end2);
+    Some((max_end - min_start) as u32)
+}
+
+/// Assembles the SAM mate fields for one read of a pair.
+///
+/// `is_read1` distinguishes read1 (0x40) from read2 (0x80).
+/// `proper_pair` should be pre-computed via [`is_proper_pair`].
+pub fn mate_fields(
+    read: &AlignmentResult,
+    mate: &AlignmentResult,
+    is_read1: bool,
+    proper_pair: bool,
+) -> MateFields {
+    let read_unmapped = read.is_unmapped();
+    let mate_unmapped = mate.is_unmapped();
+
+    let mut flag: u16 = 0x1;
+    if read_unmapped {
+        flag |= 0x4;
+    } else if read.reverse_strand {
+        flag |= 0x10;
+    }
+    if is_read1 {
+        flag |= 0x40;
+    } else {
+        flag |= 0x80;
+    }
+    if mate_unmapped {
+        flag |= 0x8;
+    } else if mate.reverse_strand {
+        flag |= 0x20;
+    }
+    if proper_pair {
+        flag |= 0x2;
+    }
+
+    let tlen = template_length(read, mate);
+
+    let (rnext, pnext) = if !mate_unmapped {
+        ("=", mate.position as i64 + 1)
+    } else if !read_unmapped {
+        ("=", read.position as i64 + 1)
+    } else {
+        ("*", 0)
+    };
+
+    let placed_pos = if read_unmapped && !mate_unmapped {
+        Some(mate.position)
+    } else {
+        None
+    };
+
+    MateFields {
+        flag,
+        rnext,
+        pnext,
+        tlen,
+        placed_pos,
+    }
+}
+
 pub fn rescue_orphan(
     orphan: &AlignmentResult,
     mate_pos: usize,
@@ -180,5 +329,251 @@ mod tests {
         let paired = pair_reads(read1, read2, &dist);
 
         assert_eq!(paired.orientation, Orientation::FR);
+    }
+
+    fn mapped_read(position: usize, ref_len: u32, reverse: bool) -> AlignmentResult {
+        use crate::types::CigarOp;
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, ref_len);
+        let mut r = AlignmentResult::new(position, cigar);
+        r.reverse_strand = reverse;
+        r
+    }
+
+    fn unmapped_read() -> AlignmentResult {
+        let mut r = AlignmentResult::new(0, Cigar::new());
+        r.flag = 0x4;
+        r
+    }
+
+    // --- is_proper_pair ---
+
+    #[test]
+    fn proper_pair_fr_within_bounds() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(200, 100, true);
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        assert!(is_proper_pair(&r1, &r2, &dist));
+    }
+
+    #[test]
+    fn proper_pair_fr_out_of_bounds() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(5000, 100, true);
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        assert!(!is_proper_pair(&r1, &r2, &dist));
+    }
+
+    #[test]
+    fn proper_pair_same_strand_not_proper() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(200, 100, false);
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        assert!(!is_proper_pair(&r1, &r2, &dist));
+    }
+
+    #[test]
+    fn proper_pair_rf_not_proper() {
+        // forward read is to the RIGHT of the reverse read → not FR orientation
+        let r1 = mapped_read(100, 100, true); // reverse at 100
+        let r2 = mapped_read(300, 100, false); // forward at 300 (forward > reverse → RF)
+        let dist = InsertSizeDistribution::with_params(400.0, 100.0);
+        assert!(!is_proper_pair(&r1, &r2, &dist));
+    }
+
+    #[test]
+    fn proper_pair_one_unmapped() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = unmapped_read();
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        assert!(!is_proper_pair(&r1, &r2, &dist));
+    }
+
+    // --- template_length ---
+
+    #[test]
+    fn template_length_fr_pair() {
+        // read1 at 100 (fwd), read2 at 300 (rev, ref_len=100)
+        // p0 = 100 (fwd, so +0), p1 = 300+99 = 399 (rev)
+        // tlen(r1,r2) = 399-100+1 = 300
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(300, 100, true);
+        assert_eq!(template_length(&r1, &r2), 300);
+        assert_eq!(template_length(&r2, &r1), -300);
+    }
+
+    #[test]
+    fn template_length_antisymmetry() {
+        let r1 = mapped_read(50, 75, false);
+        let r2 = mapped_read(200, 75, true);
+        let tlen_r1 = template_length(&r1, &r2);
+        let tlen_r2 = template_length(&r2, &r1);
+        assert_eq!(tlen_r1, -tlen_r2);
+        assert!(tlen_r1 > 0);
+    }
+
+    #[test]
+    fn template_length_equal_anchor_zero() {
+        // Both reads start at same position, same ref_len, both forward
+        // p0 = 0, p1 = 0 → tlen = 0
+        let r1 = mapped_read(0, 50, false);
+        let r2 = mapped_read(0, 50, false);
+        assert_eq!(template_length(&r1, &r2), 0);
+    }
+
+    #[test]
+    fn template_length_either_unmapped_zero() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = unmapped_read();
+        assert_eq!(template_length(&r1, &r2), 0);
+        assert_eq!(template_length(&r2, &r1), 0);
+    }
+
+    // --- pair_insert_size ---
+
+    #[test]
+    fn pair_insert_size_fr_pair() {
+        // r1: [100, 200), r2: [200, 300) → span = 300 - 100 = 200
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(200, 100, true);
+        assert_eq!(pair_insert_size(&r1, &r2), Some(200));
+    }
+
+    #[test]
+    fn pair_insert_size_none_when_unmapped() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = unmapped_read();
+        assert_eq!(pair_insert_size(&r1, &r2), None);
+        assert_eq!(pair_insert_size(&r2, &r1), None);
+    }
+
+    // --- mate_fields flag bits ---
+
+    #[test]
+    fn mate_fields_both_mapped_proper_fr() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(200, 100, true);
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        let proper = is_proper_pair(&r1, &r2, &dist);
+        assert!(proper);
+
+        let mf1 = mate_fields(&r1, &r2, true, proper);
+        assert_eq!(mf1.flag & 0x1, 0x1, "paired bit always set");
+        assert_eq!(mf1.flag & 0x40, 0x40, "read1 bit set");
+        assert_eq!(mf1.flag & 0x80, 0, "read2 bit not set for read1");
+        assert_eq!(mf1.flag & 0x2, 0x2, "proper pair set");
+        assert_eq!(mf1.flag & 0x4, 0, "read1 is mapped");
+        assert_eq!(mf1.flag & 0x8, 0, "mate (r2) is mapped");
+        assert_eq!(mf1.flag & 0x20, 0x20, "mate reverse set (r2 is reverse)");
+        assert_eq!(mf1.flag & 0x10, 0, "read1 not reverse");
+        assert_eq!(mf1.rnext, "=");
+        assert_eq!(mf1.pnext, 201);
+        assert_eq!(mf1.placed_pos, None);
+
+        let mf2 = mate_fields(&r2, &r1, false, proper);
+        assert_eq!(mf2.flag & 0x1, 0x1, "paired bit always set");
+        assert_eq!(mf2.flag & 0x80, 0x80, "read2 bit set");
+        assert_eq!(mf2.flag & 0x40, 0, "read1 bit not set for read2");
+        assert_eq!(mf2.flag & 0x2, 0x2, "proper pair set");
+        assert_eq!(mf2.flag & 0x4, 0, "read2 is mapped");
+        assert_eq!(mf2.flag & 0x8, 0, "mate (r1) is mapped");
+        assert_eq!(mf2.flag & 0x20, 0, "mate (r1) not reverse");
+        assert_eq!(mf2.flag & 0x10, 0x10, "read2 is reverse");
+        assert_eq!(mf2.rnext, "=");
+        assert_eq!(mf2.pnext, 101);
+        assert_eq!(mf2.placed_pos, None);
+    }
+
+    #[test]
+    fn mate_fields_no_proper_when_out_of_bounds() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(5000, 100, true);
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        let proper = is_proper_pair(&r1, &r2, &dist);
+        assert!(!proper);
+
+        let mf1 = mate_fields(&r1, &r2, true, proper);
+        assert_eq!(mf1.flag & 0x2, 0, "proper pair bit should not be set");
+    }
+
+    #[test]
+    fn mate_fields_no_proper_same_strand() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(200, 100, false);
+        let dist = InsertSizeDistribution::with_params(250.0, 50.0);
+        let proper = is_proper_pair(&r1, &r2, &dist);
+        assert!(!proper);
+
+        let mf1 = mate_fields(&r1, &r2, true, proper);
+        assert_eq!(mf1.flag & 0x2, 0, "proper pair bit not set for same-strand");
+        assert_eq!(mf1.flag & 0x20, 0, "mate forward so 0x20 not set");
+    }
+
+    #[test]
+    fn mate_fields_mate_unmapped() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = unmapped_read();
+
+        let mf1 = mate_fields(&r1, &r2, true, false);
+        assert_eq!(mf1.flag & 0x8, 0x8, "mate unmapped bit set");
+        assert_eq!(mf1.flag & 0x20, 0, "0x20 not set when mate unmapped");
+        assert_eq!(mf1.rnext, "=", "unmapped mate placed at read's coord");
+        assert_eq!(mf1.pnext, 101, "pnext = read's 1-based pos");
+        assert_eq!(mf1.placed_pos, None, "mapped read has no placed_pos");
+
+        let mf2 = mate_fields(&r2, &r1, false, false);
+        assert_eq!(mf2.flag & 0x4, 0x4, "this read is unmapped");
+        assert_eq!(mf2.flag & 0x8, 0, "mate (r1) is mapped");
+        assert_eq!(mf2.rnext, "=", "placed at mate's coord");
+        assert_eq!(mf2.pnext, 101, "pnext = mate's 1-based pos");
+        assert_eq!(
+            mf2.placed_pos,
+            Some(100),
+            "unmapped read inherits mate's 0-based pos"
+        );
+    }
+
+    #[test]
+    fn mate_fields_both_unmapped() {
+        let r1 = unmapped_read();
+        let r2 = unmapped_read();
+
+        let mf1 = mate_fields(&r1, &r2, true, false);
+        assert_eq!(mf1.flag & 0x4, 0x4, "this read unmapped");
+        assert_eq!(mf1.flag & 0x8, 0x8, "mate unmapped");
+        assert_eq!(mf1.rnext, "*");
+        assert_eq!(mf1.pnext, 0);
+        assert_eq!(mf1.tlen, 0);
+        assert_eq!(mf1.placed_pos, None);
+    }
+
+    #[test]
+    fn mate_fields_tlen_sign_fr_pair() {
+        // r1 fwd at 100 (ref_len 100), r2 rev at 300 (ref_len 100)
+        // template_length(r1,r2) > 0 (r1 is left anchor)
+        // template_length(r2,r1) < 0
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(300, 100, true);
+        let proper = true;
+
+        let mf1 = mate_fields(&r1, &r2, true, proper);
+        let mf2 = mate_fields(&r2, &r1, false, proper);
+        assert!(mf1.tlen > 0, "left read tlen positive");
+        assert!(mf2.tlen < 0, "right read tlen negative");
+        assert_eq!(mf1.tlen, -mf2.tlen);
+    }
+
+    #[test]
+    fn mate_fields_read1_read2_bits_exclusive() {
+        let r1 = mapped_read(100, 100, false);
+        let r2 = mapped_read(200, 100, true);
+
+        let mf_as_r1 = mate_fields(&r1, &r2, true, false);
+        let mf_as_r2 = mate_fields(&r1, &r2, false, false);
+
+        assert_ne!(mf_as_r1.flag & 0x40, 0, "0x40 set when is_read1=true");
+        assert_eq!(mf_as_r1.flag & 0x80, 0, "0x80 not set when is_read1=true");
+        assert_eq!(mf_as_r2.flag & 0x40, 0, "0x40 not set when is_read1=false");
+        assert_ne!(mf_as_r2.flag & 0x80, 0, "0x80 set when is_read1=false");
     }
 }
