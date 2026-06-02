@@ -1,6 +1,13 @@
 use bwa_mem::paired::{is_proper_pair, mate_fields, InsertSizeDistribution};
 use bwa_mem::sam::write_paired_record;
 use bwa_mem::types::{AlignmentResult, Cigar, CigarOp};
+use bwa_mem::Reference;
+
+/// A single-contig reference named "ref" with 500 A's, large enough for test positions.
+fn single_ref() -> Reference {
+    let bases = "A".repeat(500);
+    Reference::parse_fasta(&format!(">ref\n{}", bases)).unwrap()
+}
 
 fn mapped_read(position: usize, ref_len: u32, reverse: bool) -> AlignmentResult {
     let mut cigar = Cigar::new();
@@ -140,8 +147,9 @@ fn write_paired_record_output_format() {
     let mf1 = mate_fields(&r1, &r2, true, proper);
     let mf2 = mate_fields(&r2, &r1, false, proper);
 
+    let reference = single_ref();
     let mut buf1: Vec<u8> = Vec::new();
-    write_paired_record(&mut buf1, "read1", &r1, &mf1).unwrap();
+    write_paired_record(&mut buf1, &reference, "read1", &r1, &mf1).unwrap();
     let line1 = String::from_utf8(buf1).unwrap();
     let f1 = parse_sam_fields(line1.trim_end_matches('\n'));
 
@@ -159,7 +167,7 @@ fn write_paired_record_output_format() {
     assert_eq!(f1[10], "*", "QUAL stays *");
 
     let mut buf2: Vec<u8> = Vec::new();
-    write_paired_record(&mut buf2, "read1", &r2, &mf2).unwrap();
+    write_paired_record(&mut buf2, &reference, "read1", &r2, &mf2).unwrap();
     let line2 = String::from_utf8(buf2).unwrap();
     let f2 = parse_sam_fields(line2.trim_end_matches('\n'));
 
@@ -180,8 +188,9 @@ fn write_paired_record_unmapped_mate_convention() {
     let mf2 = mate_fields(&r2, &r1, false, false);
     assert_eq!(mf2.placed_pos, Some(99), "placed_pos = r1's 0-based pos");
 
+    let reference = single_ref();
     let mut buf: Vec<u8> = Vec::new();
-    write_paired_record(&mut buf, "read2", &r2, &mf2).unwrap();
+    write_paired_record(&mut buf, &reference, "read2", &r2, &mf2).unwrap();
     let line = String::from_utf8(buf).unwrap();
     let f = parse_sam_fields(line.trim_end_matches('\n'));
 

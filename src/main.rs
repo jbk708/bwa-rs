@@ -153,10 +153,10 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
                 let proper = is_proper_pair(&result1, &result2, &dist);
                 let mf1 = mate_fields(&result1, &result2, true, proper);
                 let mf2 = mate_fields(&result2, &result1, false, proper);
-                sam_write_paired(&mut output, &qname1, &result1, &mf1)?;
-                sam_write_paired(&mut output, &qname2, &result2, &mf2)?;
+                sam_write_paired(&mut output, &reference, &qname1, &result1, &mf1)?;
+                sam_write_paired(&mut output, &reference, &qname2, &result2, &mf2)?;
             } else {
-                write_sam_record(&mut output, &qname1, &result1, false)?;
+                write_sam_record(&mut output, &reference, &qname1, &result1, false)?;
             }
         }
     } else {
@@ -165,7 +165,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             let seq = r1.to_sequence();
 
             let result = aligner.align_single(&seq.bases)?;
-            write_sam_record(&mut output, &r1.qname, &result, false)?;
+            write_sam_record(&mut output, &reference, &r1.qname, &result, false)?;
             count += 1;
 
             if count.is_multiple_of(10000) {
@@ -195,6 +195,7 @@ fn write_header(output: &mut Box<dyn Write>, reference: &Reference) -> Result<()
 
 fn write_sam_record(
     output: &mut Box<dyn Write>,
+    reference: &Reference,
     qname: &str,
     result: &AlignmentResult,
     is_mate: bool,
@@ -205,11 +206,12 @@ fn write_sam_record(
         flag |= 0x10; // SEQ is reverse-complemented relative to the reference
     }
     let flag = if is_mate { flag | 0x80 } else { flag };
-    let rname = if mapped { "ref" } else { "*" };
-    let pos = if mapped {
-        result.position as i64 + 1
+    let (rname, pos) = if mapped {
+        reference
+            .locate(result.position)
+            .map_or(("*", 0), |(name, off)| (name, off as i64 + 1))
     } else {
-        0
+        ("*", 0)
     };
     let mapq = if mapped { result.mapq } else { 0 };
     let cigar_str = result.cigar.to_string();

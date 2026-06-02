@@ -231,16 +231,27 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   SEQ/QUAL stay `*` (T-009).
 
 ### T-008: RNAME hardcoded to `"ref"`; no multi-contig coordinate mapping
-- **Status:** OPEN
+- **Status:** FIXED (branch `t008-rname-contig`)
 - **Severity:** high
-- **Affected field(s):** RNAME, POS (multi-contig).
-- **Symptom:** Every mapped record reports RNAME `ref` instead of the contig name
-  (`1`); the @SQ header already uses the real name, so output is internally
+- **Affected field(s):** RNAME, POS, RNEXT, PNEXT, TLEN (multi-contig).
+- **Symptom:** Every mapped record reported RNAME `ref` instead of the contig name
+  (`1`); the @SQ header already uses the real name, so output was internally
   inconsistent and invalid for multi-contig references.
-- **Suspected cause:** `src/main.rs write_sam_record` hardcodes `"ref"`; the
-  aligner returns a single global offset with no contig (`bns`-style) mapping.
-- **Resolution:** Add a contig-offset table; map a global forward position to
-  (contig, offset) and emit the contig name + per-contig POS.
+- **Cause:** `AlignmentResult.position` is a global offset into the forward
+  concatenation of all contigs, but both record writers hardcoded RNAME `"ref"`
+  (`src/main.rs write_sam_record`, `src/sam.rs write_paired_record`) and emitted
+  POS/PNEXT as the raw global offset — there was no global→contig mapping.
+- **Resolution:** Added `Reference::locate(pos) -> Option<(&str, usize)>`
+  (`src/reference.rs`), which walks cumulative contig lengths to map a global
+  forward position to (contig name, per-contig 0-based offset). Threaded
+  `&Reference` into `write_sam_record` and `write_paired_record`; both now emit
+  the real contig name and per-contig 1-based POS. `write_paired_record` also
+  resolves the mate from its global PNEXT, emitting RNEXT `=` only when the mate
+  shares the read's contig (else the mate's contig name) and zeroing TLEN across
+  contigs. Pairing logic in `src/paired.rs` stays contig-agnostic — all contig
+  resolution lives in the SAM writers. On the chr1 / 300-uniq verification set
+  RNAME now matches bwa-mem2 (`1`); POS/PNEXT are unchanged there (single contig,
+  offset 0).
 
 ### T-009: SEQ and QUAL emitted as `*`
 - **Status:** OPEN

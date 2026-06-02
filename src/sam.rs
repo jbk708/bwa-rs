@@ -214,18 +214,42 @@ impl SAMWriter {
 /// coordinate via `placed_pos` so coordinate-sorted tools can keep pairs adjacent.
 pub fn write_paired_record<W: Write>(
     out: &mut W,
+    reference: &Reference,
     qname: &str,
     result: &AlignmentResult,
     mf: &MateFields,
 ) -> io::Result<()> {
     let mapped = !result.is_unmapped();
     let (rname, pos, mapq): (&str, i64, u8) = if mapped {
-        ("ref", result.position as i64 + 1, result.mapq)
+        reference
+            .locate(result.position)
+            .map_or(("*", 0, 0), |(name, off)| {
+                (name, off as i64 + 1, result.mapq)
+            })
     } else if let Some(p) = mf.placed_pos {
-        ("ref", p as i64 + 1, 0)
+        reference
+            .locate(p)
+            .map_or(("*", 0, 0), |(name, off)| (name, off as i64 + 1, 0))
     } else {
         ("*", 0, 0)
     };
+
+    // mf.pnext is a 1-based global coordinate; recover the 0-based global
+    // position so the mate's contig resolves the same way as the read's.
+    let (rnext, pnext, tlen): (&str, i64, i64) = if mf.rnext == "*" || mf.pnext == 0 {
+        ("*", 0, 0)
+    } else {
+        reference
+            .locate((mf.pnext - 1) as usize)
+            .map_or(("*", 0, 0), |(mate_name, mate_off)| {
+                if mate_name == rname {
+                    ("=", mate_off as i64 + 1, mf.tlen)
+                } else {
+                    (mate_name, mate_off as i64 + 1, 0)
+                }
+            })
+    };
+
     let cigar = if mapped {
         result.cigar.to_string()
     } else {
@@ -235,13 +259,51 @@ pub fn write_paired_record<W: Write>(
     writeln!(
         out,
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t*\t*",
-        qname, mf.flag, rname, pos, mapq, cigar, mf.rnext, mf.pnext, mf.tlen
+        qname, mf.flag, rname, pos, mapq, cigar, rnext, pnext, tlen
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::paired::MateFields;
+    use crate::types::{Cigar, CigarOp};
+
+    #[test]
+    fn write_paired_record_resolves_contig_name_and_pos() {
+        // Two contigs: c1=ACGT (len 4), c2=GGGGG (len 5)
+        // A read mapped at global position 5 falls in c2 at offset 1 → POS = 2 (1-based).
+        // Mate at global pnext=1-based 6 → 0-based 5 → c2 offset 1 → same contig → RNEXT "=".
+        let reference = Reference::parse_fasta(">c1\nACGT\n>c2\nGGGGG").unwrap();
+
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, 3);
+        let mut result = crate::types::AlignmentResult::new(5, cigar);
+        result.mapq = 30;
+
+        let mf = MateFields {
+            flag: 0x1 | 0x20 | 0x40,
+            rnext: "=",
+            pnext: 6,
+            tlen: 10,
+            placed_pos: None,
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_paired_record(&mut buf, &reference, "read1", &result, &mf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+
+        let fields: Vec<&str> = line.trim().split('\t').collect();
+        assert_eq!(fields[2], "c2", "RNAME should be second contig name");
+        assert_eq!(
+            fields[3], "2",
+            "POS should be per-contig 1-based (offset 1 + 1 = 2)"
+        );
+        assert_eq!(
+            fields[6], "=",
+            "RNEXT should be '=' when mate on same contig"
+        );
+    }
 
     #[test]
     fn test_header_generation() {
