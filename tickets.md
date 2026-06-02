@@ -534,3 +534,58 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   residuals (`100142`, `100189`) are not MD defects — they are 1 bp soft-clip-boundary
   shifts (`139M12S` vs `138M13S`) owned by **T-014**/**T-018**; the MD correctly
   reflects bwa-rs's own CIGAR. Core fields and NM/MC/AS unchanged; no regression.
+
+### T-021: Suboptimal-hit detection in seeding (drives MAPQ `sub` and XS)
+- **Status:** OPEN
+- **Severity:** medium
+- **Affected field(s):** MAPQ, XS (optional tag).
+- **Symptom:** Surfaced by T-015. On reads where the primary placement matches
+  bwa-mem2, MAPQ still diverges on 375/1376 identically-placed sub2k reads — and
+  **370 of those are bwa-rs scoring *higher*** (e.g. MAPQ 60 vs bwa 0 on `95M56S`,
+  `121S30M`, `45M106S`). These are heavily soft-clipped reads whose aligned fragment
+  is repetitive: bwa-mem2 finds the secondary copy and grades MAPQ down, but bwa-rs's
+  seeding surfaces no non-overlapping secondary chain, so the T-015 `sub` term is 0 →
+  baseline → MAPQ 60. The same missing second-best *alignment* score is why XS is not
+  emitted (deferred from **T-011**).
+- **Suspected cause:** `find_mems` + `filter_mems` + `chain_seeds`
+  (`src/seed.rs`, `src/chaining.rs`) produce fewer/different secondary chains than
+  bwa's seeding (re-seeding of long MEMs, seed dropping, chain de-overlap), so a
+  repetitive fragment that bwa maps to ≥2 loci yields a single bwa-rs chain. T-015's
+  `align_read` then computes `sub` over an incomplete candidate set.
+- **Resolution:** Port bwa's secondary-region machinery so `sub`/`sub_n` reflect the
+  true second-best alignment (re-seeding, `mem_mark_primary_se` clustering); then emit
+  XS from it (closes the T-011 XS deferral). Unblocks the bulk of the T-015 MAPQ
+  residual.
+
+### T-022: Paired-end MAPQ recalculation (`mem_sam_pe`) not implemented
+- **Status:** OPEN
+- **Severity:** low
+- **Affected field(s):** MAPQ (paired / rescued reads).
+- **Symptom:** After T-015 the two chr1 mate-rescue reads report MAPQ `27`/`33` where
+  bwa-mem2 reports `30`/`59`. bwa derives the single-end MAPQ with
+  `mem_approx_mapq_se` (now ported) and then *recomputes* a paired MAPQ in
+  `mem_sam_pe` from the pairing score `o`/`subo` (combining both mates and the
+  insert-size likelihood). bwa-rs applies only the SE formula per mate.
+- **Suspected cause:** No PE pairing-score MAPQ pass; `src/main.rs` emits each mate's
+  SE MAPQ unchanged. Part of the residual is also the differing CIGAR core
+  (T-014/T-018), which lowers the SE score feeding the formula.
+- **Resolution:** Port `mem_sam_pe`'s paired MAPQ adjustment (pairing score vs
+  suboptimal pairing score, capped by the SE MAPQ). Depends on a faithful pairing
+  score, which overlaps with **T-021**.
+
+### T-023: Repetitive-read seeding time/memory blow-up
+- **Status:** OPEN
+- **Severity:** medium
+- **Affected field(s):** N/A — throughput/RSS, not SAM content.
+- **Symptom:** A single full `sub2k` (2000-pair) alignment against chr1 peaks at
+  ~68 GB RSS and crawls on repetitive reads; the T-015 sub2k measurement could only
+  complete a partial set (two of eight parallel shards were OOM-killed). Per-read wall
+  time on repeat-heavy reads is seconds, not microseconds.
+- **Suspected cause:** Pre-existing — `find_mems` (`src/seed.rs`) materialises the full
+  SA occurrence list for high-frequency k-mers (a repeat seed can occur at thousands
+  of loci), with no occurrence cap / `max_occ` cutoff like bwa's. T-015's per-read
+  secondary-chain builds (`MAX_SUB_CHAINS = 32`) add to per-read cost but are not the
+  OOM root.
+- **Resolution:** Cap seed occurrences (bwa `-c` / `max_occ`) and avoid collecting all
+  positions for ultra-frequent seeds; combine with batched/parallel alignment
+  (**T-013**). Independent of the byte-identity goal but blocks large-set verification.
