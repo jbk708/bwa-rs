@@ -185,14 +185,17 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   1–10 bp POS placement diffs are **T-018** (banded SW), not soft-clipping.
 
 ### T-006: QNAME not truncated at first whitespace
-- **Status:** OPEN
+- **Status:** FIXED (branch `t006-qname-trim`, stacked on `t017-min-score`)
 - **Severity:** high (every record differs on QNAME)
 - **Affected field(s):** QNAME.
 - **Symptom:** bwa-rs emits `SRR7733443.100000 100000 length=151`; bwa-mem2 emits
   `SRR7733443.100000`. The FASTQ reader keeps the full header line as the name.
-- **Suspected cause:** `src/fastq.rs` record-name parsing keeps the whole line.
-- **Resolution:** Trim the read name at the first whitespace (and strip a trailing
-  `/1`/`/2`) as bwa does.
+- **Cause:** `src/fastq.rs` record-name parsing kept the whole line.
+- **Resolution:** Added `trim_qname` to `src/fastq.rs`: truncate the read name at
+  the first ASCII whitespace, then strip a trailing `/`+single-digit read-number
+  suffix (bwa `trim_readno`: `/1`/`/2`/etc.). Applied where `qname` is built in
+  `next()`, so both the SAM QNAME and the `Sequence` name are trimmed. QNAME now
+  matches bwa-mem2 on every record.
 
 ### T-007: Paired-end not implemented (pairing FLAG bits, RNEXT/PNEXT/TLEN)
 - **Status:** OPEN
