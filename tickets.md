@@ -289,14 +289,25 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   T-018 (banded SW), not CIGAR formatting.
 
 ### T-011: Optional tags missing (NM, MD, AS, XS, …)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t011-optional-tags`) — XS deferred to T-015.
 - **Severity:** medium
 - **Affected field(s):** optional tag columns.
 - **Symptom:** CLI records carry no tags; bwa-mem2 emits `NM:i:`, `MD:Z:`,
   `AS:i:`, `XS:i:`, `MC:Z:`, etc. (`AlignmentResult` already computes `nm` and an
   MD string, but `write_sam_record` drops them.)
-- **Resolution:** Emit at least NM/MD/AS (already computed) and XS; wire the
-  remaining tags as the corresponding features land.
+- **Resolution:** Both SAM record writers now append optional tags on mapped
+  records, in bwa-mem2's column order: `NM:i` · `MD:Z` · `MC:Z` (paired only) ·
+  `AS:i`. `NM`/`AS`/`MD` reuse the already-computed `AlignmentResult.nm`/`.score`/
+  `.md_tag` (previously dropped at write time). `MC:Z` (mate CIGAR, M-form) is
+  carried on a new `MateFields.mc: Option<String>` populated in
+  `paired::mate_fields` from the mate's `Cigar::to_sam_string()` (present only when
+  the mate is mapped). `write_sam_record` (`src/main.rs`, single-end) emits
+  NM/MD/AS (no mate → no MC); `write_paired_record` (`src/sam.rs`) emits all four.
+  Unmapped records emit no tags. **XS is intentionally not emitted:** bwa-rs has no
+  true second-best *alignment* score (only the MEM-score MAPQ heuristic), so a
+  byte-matching XS depends on the region-scoring/MAPQ port — deferred to **T-015**.
+  New tag-order/absence tests in `src/main.rs`, `src/sam.rs`, `src/paired.rs`; all
+  tests pass, `cargo clippy` (lib+bin) clean.
 
 ### T-012: `index` subcommand is a no-op; `mem` rebuilds the index every run
 - **Status:** OPEN

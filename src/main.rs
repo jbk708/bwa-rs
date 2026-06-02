@@ -267,10 +267,89 @@ fn write_sam_record(
     let tlen: i64 = 0;
     let (seq, qual_out) = oriented_seq_qual(bases, qual, result.reverse_strand);
 
-    writeln!(
+    write!(
         output,
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         qname, flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seq, qual_out
     )?;
+    if mapped {
+        write!(output, "\tNM:i:{}", result.nm)?;
+        if let Some(ref md) = result.md_tag {
+            write!(output, "\t{}", md)?;
+        }
+        write!(output, "\tAS:i:{}", result.score)?;
+    }
+    writeln!(output)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bwa_mem::types::{Cigar, CigarOp};
+    use bwa_mem::Reference;
+
+    fn call_write_sam_record(
+        reference: &Reference,
+        qname: &str,
+        result: &AlignmentResult,
+        bases: &[u8],
+        qual: &str,
+    ) -> String {
+        use std::sync::{Arc, Mutex};
+        let shared: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let shared2 = Arc::clone(&shared);
+        struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for SharedWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().write(buf)
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut output: Box<dyn Write> = Box::new(SharedWriter(shared2));
+        write_sam_record(&mut output, reference, qname, result, bases, qual, false).unwrap();
+        drop(output);
+        let bytes = shared.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn single_end_mapped_record_emits_nm_md_as_no_mc_no_xs() {
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, 50);
+        let mut result = AlignmentResult::new(0, cigar);
+        result.nm = 3;
+        result.score = 50;
+        result.md_tag = Some("MD:Z:50".to_string());
+
+        let line = call_write_sam_record(&reference, "single_read", &result, &[0u8; 50], &"I".repeat(50));
+
+        assert!(line.contains("\tNM:i:3\t"), "NM tag present");
+        assert!(line.contains("\tMD:Z:50\t"), "MD tag present");
+        assert!(line.contains("\tAS:i:50"), "AS tag present");
+        assert!(!line.contains("MC:"), "no MC in single-end");
+        assert!(!line.contains("XS:"), "no XS emitted");
+
+        let nm_pos = line.find("\tNM:i:").unwrap();
+        let md_pos = line.find("\tMD:Z:").unwrap();
+        let as_pos = line.find("\tAS:i:").unwrap();
+        assert!(nm_pos < md_pos, "NM before MD");
+        assert!(md_pos < as_pos, "MD before AS");
+    }
+
+    #[test]
+    fn single_end_unmapped_record_emits_no_tags() {
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
+        let mut result = AlignmentResult::new(0, Cigar::new());
+        result.flag = 0x4;
+
+        let line = call_write_sam_record(&reference, "unmapped_read", &result, &[0u8, 1, 2, 3], "IIII");
+
+        let fields: Vec<&str> = line.trim().split('\t').collect();
+        assert_eq!(fields.len(), 11, "unmapped single-end: exactly 11 fields");
+        assert!(!line.contains("NM:"), "no NM on unmapped");
+        assert!(!line.contains("MD:"), "no MD on unmapped");
+        assert!(!line.contains("AS:"), "no AS on unmapped");
+    }
 }

@@ -281,11 +281,22 @@ pub fn write_paired_record<W: Write>(
 
     let (seq, qual_out) = oriented_seq_qual(bases, qual, result.reverse_strand);
 
-    writeln!(
+    write!(
         out,
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         qname, mf.flag, rname, pos, mapq, cigar, rnext, pnext, tlen, seq, qual_out
-    )
+    )?;
+    if mapped {
+        write!(out, "\tNM:i:{}", result.nm)?;
+        if let Some(ref md) = result.md_tag {
+            write!(out, "\t{}", md)?;
+        }
+        if let Some(ref mc) = mf.mc {
+            write!(out, "\tMC:Z:{}", mc)?;
+        }
+        write!(out, "\tAS:i:{}", result.score)?;
+    }
+    writeln!(out)
 }
 
 #[cfg(test)]
@@ -343,6 +354,7 @@ mod tests {
             pnext: 6,
             tlen: 10,
             placed_pos: None,
+            mc: Some("3M".to_string()),
         };
 
         let mut buf: Vec<u8> = Vec::new();
@@ -419,5 +431,82 @@ mod tests {
         assert_eq!(record.pos, 1000);
         assert_eq!(record.mapq, 30);
         assert_eq!(record.cigar, "50M");
+    }
+
+    #[test]
+    fn write_paired_record_emits_nm_md_mc_as_in_order() {
+        use crate::reference::Reference;
+        use crate::types::CigarOp;
+
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
+
+        let mut cigar = Cigar::new();
+        cigar.push(CigarOp::M, 100);
+        let mut r1 = crate::types::AlignmentResult::new(0, cigar.clone());
+        r1.nm = 2;
+        r1.score = 151;
+        r1.md_tag = Some("MD:Z:50A49".to_string());
+
+        let mut r2 = crate::types::AlignmentResult::new(200, cigar);
+        r2.reverse_strand = true;
+
+        let mf = MateFields {
+            flag: 0x1 | 0x20 | 0x40,
+            rnext: "=",
+            pnext: 201,
+            tlen: 300,
+            placed_pos: None,
+            mc: Some("100M".to_string()),
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_paired_record(&mut buf, &reference, "read1", &r1, &[0u8; 100], &"I".repeat(100), &mf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+
+        assert!(line.contains("\tNM:i:2\t"), "NM tag present with correct value");
+        assert!(line.contains("\tMD:Z:50A49\t"), "MD tag present");
+        assert!(line.contains("\tMC:Z:100M\t"), "MC tag present");
+        assert!(line.contains("\tAS:i:151"), "AS tag present");
+        assert!(!line.contains("XS:"), "XS must not be emitted");
+
+        let nm_pos = line.find("\tNM:i:").unwrap();
+        let md_pos = line.find("\tMD:Z:").unwrap();
+        let mc_pos = line.find("\tMC:Z:").unwrap();
+        let as_pos = line.find("\tAS:i:").unwrap();
+        assert!(nm_pos < md_pos, "NM before MD");
+        assert!(md_pos < mc_pos, "MD before MC");
+        assert!(mc_pos < as_pos, "MC before AS");
+    }
+
+    #[test]
+    fn write_paired_record_unmapped_emits_no_tags() {
+        use crate::reference::Reference;
+
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", "A".repeat(210))).unwrap();
+
+        let mut r = crate::types::AlignmentResult::new(0, Cigar::new());
+        r.flag = 0x4;
+        r.nm = 0;
+        r.md_tag = None;
+
+        let mf = MateFields {
+            flag: 0x1 | 0x4 | 0x80,
+            rnext: "*",
+            pnext: 0,
+            tlen: 0,
+            placed_pos: None,
+            mc: None,
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+        write_paired_record(&mut buf, &reference, "read_unmap", &r, &[0u8, 1, 2, 3], "IIII", &mf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+
+        let fields: Vec<&str> = line.trim().split('\t').collect();
+        assert_eq!(fields.len(), 11, "unmapped record should have exactly 11 fields, no tags");
+        assert!(!line.contains("NM:"), "no NM on unmapped");
+        assert!(!line.contains("MD:"), "no MD on unmapped");
+        assert!(!line.contains("MC:"), "no MC on unmapped");
+        assert!(!line.contains("AS:"), "no AS on unmapped");
     }
 }
