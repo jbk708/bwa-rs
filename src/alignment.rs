@@ -3,6 +3,7 @@
 use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
+use crate::paired::InsertSizeDistribution;
 use crate::reference::reverse_complement;
 use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
 use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
@@ -284,6 +285,80 @@ impl Aligner {
         Ok((r1, r2))
     }
 
+    /// Attempt to rescue an unmapped `orphan` read given its mapped `mate`, by running a
+    /// local Smith-Waterman of the orphan within the mate's insert-size window (bwa
+    /// `mem_matesw`). Returns a forward-coordinate alignment on success, gated by
+    /// `min_score`. The orphan is expected on the strand opposite the mate (FR).
+    pub fn rescue_mate(
+        &self,
+        orphan: &[u8],
+        mate: &AlignmentResult,
+        dist: &InsertSizeDistribution,
+    ) -> Option<AlignmentResult> {
+        if mate.is_unmapped() || orphan.is_empty() {
+            return None;
+        }
+        let n_fwd = self.index.n_fwd;
+        if n_fwd == 0 {
+            return None;
+        }
+        let forward_ref = &self.reference[..n_fwd];
+
+        let max_isize = dist.upper_bound() as usize;
+        if max_isize < orphan.len() {
+            return None;
+        }
+
+        let mate_reflen = mate.cigar.reference_length();
+
+        // FR geometry in forward coordinates: the orphan maps on the strand opposite
+        // the mate. If the mate is forward (5' at mate.position) the orphan is reverse
+        // and downstream; if the mate is reverse (5' at mate.position + mate_reflen) the
+        // orphan is forward and upstream.
+        let (window_start, window_end, oriented, rescued_reverse) = if !mate.reverse_strand {
+            let ws = mate.position;
+            let we = (mate.position + max_isize).min(n_fwd);
+            (ws, we, reverse_complement(orphan), true)
+        } else {
+            let we = (mate.position + mate_reflen).min(n_fwd);
+            let ws = we.saturating_sub(max_isize);
+            (ws, we, orphan.to_vec(), false)
+        };
+
+        if window_end <= window_start {
+            return None;
+        }
+        let window = &forward_ref[window_start..window_end];
+
+        let la = local_align(&oriented, window, &self.scoring)?;
+        if la.score < self.min_score {
+            return None;
+        }
+
+        let mut cigar = Cigar::new();
+        if la.query_start > 0 {
+            cigar.push(CigarOp::S, la.query_start as u32);
+        }
+        cigar.extend(la.cigar);
+        let trailing = oriented.len() - la.query_end;
+        if trailing > 0 {
+            cigar.push(CigarOp::S, trailing as u32);
+        }
+
+        let position = window_start + la.ref_offset;
+        let nm = self.compute_nm(&cigar, &oriented, forward_ref, position);
+        let md_tag =
+            AlignmentResult::new(position, cigar.clone()).mdz_string(&oriented, forward_ref);
+
+        let mut result = AlignmentResult::new(position, cigar);
+        result.reverse_strand = rescued_reverse;
+        result.score = la.score;
+        result.nm = nm;
+        result.mapq = rescue_mapq(la.score, oriented.len() as i32, &self.scoring);
+        result.md_tag = Some(md_tag);
+        Some(result)
+    }
+
     fn unmapped_result(&self) -> AlignmentResult {
         AlignmentResult {
             position: 0,
@@ -535,6 +610,120 @@ impl AffineDP {
     }
 }
 
+/// Best local alignment of `query` against `window` via affine-gap Smith-Waterman.
+/// Reference ends outside the optimal alignment are free; query ends outside it are
+/// reported as `query_start`/`query_end` so the caller can soft-clip them. The returned
+/// `cigar` covers only the aligned core (Eq/X/I/D, no soft-clips). Returns `None` when
+/// either input is empty or no positive-scoring alignment exists.
+#[derive(Clone, Debug)]
+pub struct LocalAlignment {
+    pub ref_offset: usize,
+    pub query_start: usize,
+    pub query_end: usize,
+    pub score: i32,
+    pub cigar: Cigar,
+}
+
+pub fn local_align(query: &[u8], window: &[u8], scoring: &Scoring) -> Option<LocalAlignment> {
+    let ql = query.len();
+    let wl = window.len();
+    if ql == 0 || wl == 0 {
+        return None;
+    }
+    let neg = i32::MIN / 2;
+    let cols = wl + 1;
+    // H = best score ending at (i,j); E = horizontal gap (deletion, consumes reference);
+    // F = vertical gap (insertion, consumes query).
+    let mut h = vec![0i32; (ql + 1) * cols];
+    let mut e = vec![neg; (ql + 1) * cols];
+    let mut f = vec![neg; (ql + 1) * cols];
+
+    let mut best_score = 0i32;
+    let mut best_i = 0usize;
+    let mut best_j = 0usize;
+
+    for i in 1..=ql {
+        for j in 1..=wl {
+            let s = if query[i - 1] == window[j - 1] {
+                scoring.match_score
+            } else {
+                -scoring.mismatch_penalty
+            };
+            // deletion (horizontal): consumes reference column j
+            let e_val = h[i * cols + (j - 1)]
+                .saturating_sub(scoring.gap_open)
+                .max(e[i * cols + (j - 1)].saturating_sub(scoring.gap_extend));
+            // insertion (vertical): consumes query row i
+            let f_val = h[(i - 1) * cols + j]
+                .saturating_sub(scoring.gap_open)
+                .max(f[(i - 1) * cols + j].saturating_sub(scoring.gap_extend));
+            e[i * cols + j] = e_val;
+            f[i * cols + j] = f_val;
+            let diag = h[(i - 1) * cols + (j - 1)].saturating_add(s);
+            let h_val = 0.max(diag).max(e_val).max(f_val);
+            h[i * cols + j] = h_val;
+            if h_val > best_score {
+                best_score = h_val;
+                best_i = i;
+                best_j = j;
+            }
+        }
+    }
+
+    if best_score <= 0 {
+        return None;
+    }
+
+    // Traceback from (best_i, best_j) until H hits 0.
+    let mut ops: Vec<CigarOp> = Vec::new();
+    let mut i = best_i;
+    let mut j = best_j;
+    while i > 0 && j > 0 && h[i * cols + j] > 0 {
+        let s = if query[i - 1] == window[j - 1] {
+            scoring.match_score
+        } else {
+            -scoring.mismatch_penalty
+        };
+        let cur = h[i * cols + j];
+        if cur == h[(i - 1) * cols + (j - 1)].saturating_add(s) {
+            ops.push(if query[i - 1] == window[j - 1] {
+                CigarOp::Eq
+            } else {
+                CigarOp::X
+            });
+            i -= 1;
+            j -= 1;
+        } else if cur == e[i * cols + j] {
+            ops.push(CigarOp::D);
+            j -= 1;
+        } else if cur == f[i * cols + j] {
+            ops.push(CigarOp::I);
+            i -= 1;
+        } else {
+            break;
+        }
+    }
+
+    ops.reverse();
+    Some(LocalAlignment {
+        ref_offset: j,
+        query_start: i,
+        query_end: best_i,
+        score: best_score,
+        cigar: Cigar::compress(ops),
+    })
+}
+
+/// Approximate MAPQ for a rescued mate from its alignment score (bwa-exact MAPQ is T-015).
+fn rescue_mapq(score: i32, query_len: i32, scoring: &Scoring) -> u8 {
+    let perfect = query_len * scoring.match_score;
+    if perfect <= 0 {
+        return 0;
+    }
+    let frac = (score as f64 / perfect as f64).clamp(0.0, 1.0);
+    (60.0 * frac).round() as u8
+}
+
 pub fn affine_extend_forward(
     query: &[u8],
     reference: &[u8],
@@ -689,7 +878,140 @@ fn traceback_affine(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fm_index::FMIndex as FMIndexAlias;
+    use crate::paired::InsertSizeDistribution;
     use crate::reference::Reference;
+
+    fn enc(s: &str) -> Vec<u8> {
+        s.bytes()
+            .map(|b| match b {
+                b'A' => 0u8,
+                b'C' => 1,
+                b'G' => 2,
+                b'T' => 3,
+                _ => 4,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn local_align_exact_substring() {
+        let window = enc("AAAACGTACGTAAAA");
+        let query = enc("CGTACGT");
+        let scoring = Scoring::default();
+        let la = local_align(&query, &window, &scoring).unwrap();
+        assert_eq!(la.query_start, 0);
+        assert_eq!(la.query_end, query.len());
+        assert_eq!(la.score, query.len() as i32 * scoring.match_score);
+        assert_eq!(la.ref_offset, 4, "matches the CGTACGT at window offset 4");
+        assert_eq!(la.cigar.to_sam_string(), "7M");
+    }
+
+    #[test]
+    fn local_align_soft_clips_query_ends() {
+        // query = junk(TTT) + core(ACGTAC) + junk(TTT); core matches window middle
+        let window = enc("GGGGACGTACGGGG");
+        let query = enc("TTTACGTACTTT");
+        let scoring = Scoring::default();
+        let la = local_align(&query, &window, &scoring).unwrap();
+        assert_eq!(la.query_start, 3, "leading 3 bases clipped");
+        assert_eq!(la.query_end, 9, "trailing 3 bases clipped");
+        assert_eq!(la.cigar.to_sam_string(), "6M");
+    }
+
+    #[test]
+    fn local_align_none_on_empty() {
+        let scoring = Scoring::default();
+        assert!(local_align(&[], &enc("ACGT"), &scoring).is_none());
+        assert!(local_align(&enc("ACGT"), &[], &scoring).is_none());
+    }
+
+    fn rescue_test_aligner(body: &str) -> (Aligner, Vec<u8>) {
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{body}")).unwrap();
+        let ref_data = ref_seq.as_slice_2n();
+        let index = FMIndexAlias::build_2n(&ref_seq);
+        let aligner = Aligner::new(index, ref_data.clone()).min_score(10);
+        (aligner, ref_data)
+    }
+
+    #[test]
+    fn rescue_mate_forward_mate_places_reverse_orphan_downstream() {
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let (aligner, ref_data) = rescue_test_aligner(body);
+        let n_fwd = body.len();
+        let fwd = &ref_data[..n_fwd];
+
+        // mate maps forward at position 0, covering 20 bp
+        let mut mate_cigar = Cigar::new();
+        mate_cigar.push(CigarOp::M, 20);
+        let mut mate = AlignmentResult::new(0, mate_cigar);
+        mate.reverse_strand = false;
+
+        // orphan is the reverse-strand read of forward region [35, 55): the read as it
+        // would arrive from the sequencer is reverse_complement of that region.
+        let region = fwd[35..55].to_vec();
+        let orphan = reverse_complement(&region);
+
+        let dist = InsertSizeDistribution::with_params(60.0, 5.0); // upper_bound = 60+20=80
+        let rescued = aligner
+            .rescue_mate(&orphan, &mate, &dist)
+            .expect("should rescue");
+        assert!(rescued.reverse_strand, "orphan rescued on reverse strand");
+        assert_eq!(rescued.position, 35, "placed at forward coord 35");
+        assert_eq!(rescued.cigar.to_sam_string(), "20M");
+        assert_eq!(rescued.nm, 0);
+    }
+
+    #[test]
+    fn rescue_mate_reverse_mate_places_forward_orphan_upstream() {
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let (aligner, ref_data) = rescue_test_aligner(body);
+        let n_fwd = body.len();
+        let fwd = &ref_data[..n_fwd];
+
+        // mate maps REVERSE at position 40, covering 20 bp (5' end at 60)
+        let mut mate_cigar = Cigar::new();
+        mate_cigar.push(CigarOp::M, 20);
+        let mut mate = AlignmentResult::new(40, mate_cigar);
+        mate.reverse_strand = true;
+
+        // orphan is a forward read of region [5, 25)
+        let orphan = fwd[5..25].to_vec();
+
+        let dist = InsertSizeDistribution::with_params(50.0, 5.0); // upper_bound = 70
+        let rescued = aligner
+            .rescue_mate(&orphan, &mate, &dist)
+            .expect("should rescue");
+        assert!(!rescued.reverse_strand, "orphan rescued on forward strand");
+        assert_eq!(rescued.position, 5, "placed at forward coord 5");
+        assert_eq!(rescued.cigar.to_sam_string(), "20M");
+        assert_eq!(rescued.nm, 0);
+    }
+
+    #[test]
+    fn rescue_mate_none_for_unrelated_orphan() {
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let (aligner, _ref_data) = rescue_test_aligner(body);
+        let mut mate_cigar = Cigar::new();
+        mate_cigar.push(CigarOp::M, 20);
+        let mut mate = AlignmentResult::new(0, mate_cigar);
+        mate.reverse_strand = false;
+        // orphan that does not occur in the window
+        let orphan = enc("TTTTTTTTTTTTTTTTTTTT");
+        let dist = InsertSizeDistribution::with_params(60.0, 5.0);
+        assert!(aligner.rescue_mate(&orphan, &mate, &dist).is_none());
+    }
+
+    #[test]
+    fn rescue_mate_none_when_mate_unmapped() {
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let (aligner, _ref_data) = rescue_test_aligner(body);
+        let mut mate = AlignmentResult::new(0, Cigar::new());
+        mate.flag = 0x4;
+        let orphan = enc("ACGTACGATCGATCGGATTC");
+        let dist = InsertSizeDistribution::with_params(60.0, 5.0);
+        assert!(aligner.rescue_mate(&orphan, &mate, &dist).is_none());
+    }
 
     #[test]
     fn test_unmapped_result() {

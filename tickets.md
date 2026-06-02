@@ -440,19 +440,39 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   (**T-015**).
 
 ### T-019: Mate rescue not implemented (unmapped mate via banded Smith-Waterman)
-- **Status:** OPEN (split out of T-007)
+- **Status:** FIXED (branch `t019-mate-rescue`)
 - **Severity:** medium
 - **Affected field(s):** FLAG (0x4/0x8/0x2), POS, CIGAR — mapped-vs-unmapped status of a mate.
 - **Symptom:** When one mate maps and the other does not, bwa-mem2 runs a banded
   Smith-Waterman around the mapped mate's expected position (`mem_matesw`) and
-  often rescues the unmapped mate, marking the pair proper. bwa-rs leaves it
-  unmapped. On the chr1 / 300-uniq set this is the entire 8/600 residual FLAG
-  divergence after T-007 (bwa-rs `133`/`73`/`89`/`165` → bwa-mem2 `147`/`99`/`83`/`163`).
-- **Suspected cause:** No `mem_matesw` equivalent; `align_read` only seeds from the
-  read's own MEMs and never aligns a mate into the partner's insert-size window.
-- **Resolution:** Port bwa's `mem_matesw` — align the unmapped mate within the
-  insert-size window (the `InsertSizeDistribution` from T-007) around the mapped
-  mate; accept if it clears the score threshold (`-T`). Related to T-018 (banded SW).
+  often rescues the unmapped mate, marking the pair proper. bwa-rs left it
+  unmapped. On the chr1 / 300-uniq set this was the entire 8/600 residual FLAG
+  divergence after T-007.
+- **Cause:** No `mem_matesw` equivalent; `align_read` only seeds from the read's own
+  MEMs and never aligned a mate into the partner's insert-size window.
+- **Resolution:** Added `local_align` (affine-gap **local** Smith-Waterman over a
+  reference window with free reference start/end and soft-clipped query ends) and
+  `Aligner::rescue_mate` (`src/alignment.rs`). When exactly one mate maps,
+  `rescue_mate` derives the FR insert-size window in forward coordinates from the
+  `InsertSizeDistribution` (T-007) around the mapped mate — downstream + reverse
+  strand if the mate is forward, upstream + forward strand if the mate is reverse —
+  orients the orphan onto the opposite strand, runs `local_align`, and returns a
+  forward-coordinate alignment gated by `min_score` (`-T`). `ParallelAligner`
+  delegates; the paired emit loop in `src/main.rs` invokes rescue before computing
+  proper-pair/mate fields. The dead, semantically-wrong `rescue_orphan` stub (it set
+  the 0x8 mate-unmapped bit on the orphan) was removed from `src/paired.rs`.
+  **Measured (chr1 / 300-uniq vs bwa-mem2, `bench/compare_t019.md`), T-020 → T-019:
+  POS 2 → 0, PNEXT 2 → 0, FLAG 8 → 4, TLEN 8 → 4, SEQ 3 → 2, QUAL 3 → 2.** The two
+  rescuable mates (`100124`, `100170`) are now placed at the exact bwa-mem2
+  coordinates with matching proper-pair FLAGs (`147`/`163`); no regressions (only
+  those two reads changed behaviour, unmapped → correctly placed).
+- **Residuals (other tickets, not rescue defects):** the rescued reads' MAPQ
+  (`12` vs bwa `30`/`59`) is **T-015** (MAPQ formula); their CIGAR-core exactness
+  (`44S37M1I2M1D58M9S` vs `44S98M9S`, `19S75M57S` vs `19S88M44S` — `local_align`
+  gap/clip tie-breaks vs bwa's `ksw_extend` end-bonus model) traces to T-014/T-015;
+  the 4 remaining FLAG diffs (`100198`/`100277`) are reads bwa-mem2 *also* leaves
+  unmapped — an unmapped-mate strand-flag (0x10/0x20) convention follow-up; the one
+  1 bp CIGAR boundary shift (`100142`) is **T-014**/**T-018**.
 
 ### T-020: MD:Z string is malformed and computed on the wrong strand
 - **Status:** FIXED (branch `t020-md-correctness`, stacked on `t011-optional-tags`)

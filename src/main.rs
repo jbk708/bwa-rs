@@ -166,8 +166,19 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             }
         }
 
-        for (read1, pair) in buf {
-            if let Some(read2) = pair {
+        for (mut read1, pair) in buf {
+            if let Some(mut read2) = pair {
+                // Mate rescue: when exactly one mate mapped, try to place the other by
+                // banded SW within the insert-size window around the mapped mate.
+                if read1.result.is_unmapped() && !read2.result.is_unmapped() {
+                    if let Some(rescued) = aligner.rescue_mate(&read1.bases, &read2.result, &dist) {
+                        read1.result = rescued;
+                    }
+                } else if read2.result.is_unmapped() && !read1.result.is_unmapped() {
+                    if let Some(rescued) = aligner.rescue_mate(&read2.bases, &read1.result, &dist) {
+                        read2.result = rescued;
+                    }
+                }
                 let proper = is_proper_pair(&read1.result, &read2.result, &dist);
                 let mf1 = mate_fields(&read1.result, &read2.result, true, proper);
                 let mf2 = mate_fields(&read2.result, &read1.result, false, proper);
