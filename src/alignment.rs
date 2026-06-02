@@ -3,6 +3,7 @@
 use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
+use crate::reference::reverse_complement;
 use crate::seed::{filter_mems, find_mems, DEFAULT_MIN_SEED_LEN};
 use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
 
@@ -150,11 +151,10 @@ impl Aligner {
         // consumed, which is the alignment's absolute start.
         let ref_start = backward.ref_end;
 
-        // nm / score / MD are computed in the coordinate space the alignment was
-        // built in (the indexed sequence, which is 2N for a build_2n index).
+        // nm / score are mismatch/indel counts, invariant to strand, so they are
+        // computed in the space the alignment was built in (2N for a build_2n index).
         let nm = self.compute_nm(&cigar, query, ref_seq, ref_start);
         let score = self.compute_alignment_score(&cigar, query, ref_seq, ref_start);
-        let md_tag = AlignmentResult::new(ref_start, cigar.clone()).mdz_string(query, ref_seq);
 
         // Map an indexed-space position to the reported forward-strand position.
         // For a 2N index, positions >= n_fwd fall in the reverse-complement half:
@@ -167,6 +167,16 @@ impl Aligner {
             (fwd_pos, true, cigar.reversed())
         } else {
             (ref_start, false, cigar)
+        };
+
+        // MD records reference bases in forward-strand order. For a reverse-strand
+        // read this means the forward-oriented read (the reverse-complement of the
+        // query) walked along the forward CIGAR against the forward reference.
+        let md_tag = if reverse_strand {
+            let fwd_query = reverse_complement(query);
+            AlignmentResult::new(position, cigar.clone()).mdz_string(&fwd_query, ref_seq)
+        } else {
+            AlignmentResult::new(position, cigar.clone()).mdz_string(query, ref_seq)
         };
 
         let mut result = AlignmentResult::new(position, cigar);
@@ -698,6 +708,34 @@ mod tests {
         let scoring = Scoring::default();
         assert_eq!(scoring.match_score, 1);
         assert_eq!(scoring.mismatch_penalty, 4);
+    }
+
+    #[test]
+    fn test_mdz_reverse_strand_uses_forward_reference() {
+        let fwd = "AGCTTAGCTAGGCATTACGATCGATCGGATCCATGCATGA";
+        let reference = Reference::parse_fasta(&format!(">ref\n{}", fwd)).unwrap();
+        let ref_data = reference.as_slice_2n();
+        let n = fwd.len();
+        let fwd_enc: Vec<u8> = ref_data[..n].to_vec();
+
+        let (start, len, off) = (5usize, 30usize, 20usize);
+        let mut fwd_read = fwd_enc[start..start + len].to_vec();
+        fwd_read[off] = (fwd_read[off] + 1) % 4;
+        let read = reverse_complement(&fwd_read);
+
+        let index = FMIndex::build_2n(&reference);
+        let aligner = Aligner::new(index, ref_data).min_seed_len(11).min_score(0);
+        let result = aligner.align_read(&read, None).unwrap();
+
+        assert!(
+            result.reverse_strand,
+            "read should map to the reverse strand"
+        );
+        assert_eq!(result.cigar.to_sam_string(), "30M");
+        let bases = ['A', 'C', 'G', 'T'];
+        let ref_base = bases[fwd_enc[start + off] as usize];
+        let expected = format!("MD:Z:{}{}{}", off, ref_base, len - off - 1);
+        assert_eq!(result.md_tag.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

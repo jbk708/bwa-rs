@@ -308,6 +308,12 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   byte-matching XS depends on the region-scoring/MAPQ port — deferred to **T-015**.
   New tag-order/absence tests in `src/main.rs`, `src/sam.rs`, `src/paired.rs`; all
   tests pass, `cargo clippy` (lib+bin) clean.
+- **Measured (chr1 / 300-uniq vs bwa-mem2):** NM matches 592/594, MC 586/588, AS
+  505/594 (the AS gap is scoring-defaults divergence → **T-014**), all residuals
+  tracing to the known T-019 mate-rescue reads. The comparison also exposed that
+  the already-computed MD string was malformed and reverse-strand-incorrect
+  (186/594 differing) — a pre-existing computation defect, not a tag-emission bug —
+  fixed in follow-up **T-020** (MD differing 186 → 2).
 
 ### T-012: `index` subcommand is a no-op; `mem` rebuilds the index every run
 - **Status:** OPEN
@@ -430,3 +436,37 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
 - **Resolution:** Port bwa's `mem_matesw` — align the unmapped mate within the
   insert-size window (the `InsertSizeDistribution` from T-007) around the mapped
   mate; accept if it clears the score threshold (`-T`). Related to T-018 (banded SW).
+
+### T-020: MD:Z string is malformed and computed on the wrong strand
+- **Status:** FIXED (branch `t020-md-correctness`, stacked on `t011-optional-tags`)
+- **Severity:** high (byte-affecting on ~31% of records once T-011 emits the tag)
+- **Affected field(s):** MD.
+- **Symptom:** Surfaced by the T-011 chr1 comparison: MD differed from bwa-mem2 on
+  **186/594** records. Two independent defects in `AlignmentResult::mdz_string`
+  (`src/types.rs`):
+  1. **Missing `0` separators.** The SAM MD grammar
+     (`[0-9]+(([A-Z]|\^[A-Z]+)[0-9]+)*`) requires a number before *every* mismatch
+     base and at the string's end, even when zero. bwa-rs only emitted the count
+     when `> 0`, so adjacent mismatches produced `…4AA18` instead of `…4A0A18`, a
+     leading mismatch produced `C119…` instead of `0C119…`, and a mismatch after a
+     deletion lost its separator.
+  2. **Wrong strand.** MD was computed at the seed-extension call site *before* the
+     2N→forward remap, so a reverse-strand read recorded reverse-complement-half
+     reference bases in mirrored order — e.g. bwa-rs `132A18` where bwa-mem2 emits
+     `18T132` (`A` = complement of `T`, position mirrored).
+- **Cause:** `mdz_string` flushed `match_count` only when `> 0`; and
+  `build_alignment` (`src/alignment.rs`) called `mdz_string(query, ref_seq)` in the
+  2N indexed space rather than against the forward reference.
+- **Resolution:** (1) `mdz_string` now always flushes the running match count before
+  each mismatch/deletion and once at the end, yielding spec-compliant `0` separators
+  and trailing number. (2) `build_alignment` computes MD *after* the strand remap;
+  for a reverse-strand read it walks the forward-oriented read
+  (`reverse_complement(query)`) along the forward CIGAR against the forward
+  reference. NM/AS are mismatch/indel *counts* (strand-invariant) and are unchanged.
+  Two existing unit tests that encoded the malformed format were corrected
+  (`2T2^C` → `2T2^C0`, `TGC` → `0T0G0C0`); added `test_mdz_leading_mismatch`,
+  `test_mdz_adjacent_mismatches`, and `test_mdz_reverse_strand_uses_forward_reference`.
+  **Measured (chr1 / 300-uniq vs bwa-mem2): MD differing 186 → 2 (0.3%).** The 2
+  residuals (`100142`, `100189`) are not MD defects — they are 1 bp soft-clip-boundary
+  shifts (`139M12S` vs `138M13S`) owned by **T-014**/**T-018**; the MD correctly
+  reflects bwa-rs's own CIGAR. Core fields and NM/MC/AS unchanged; no regression.
