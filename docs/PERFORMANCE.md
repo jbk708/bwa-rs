@@ -37,10 +37,10 @@ O(n) SA-IS construction scales linearly with sequence size.
 |-----------|--------|---------|-------|
 | match_score | 1 | 1 | Match bonus |
 | mismatch_penalty | 4 | 4 | Mismatch penalty |
-| gap_open | 6 | 5 | Gap opening penalty |
+| gap_open | 6 | 6 | Gap opening penalty |
 | gap_extend | 1 | 1 | Gap extension penalty |
 | bandwidth | `min(256, 16 + len/2)` | dynamic | Banded DP width |
-| min_seed_len | 10 | 19 | Minimum MEM seed |
+| min_seed_len | 19 | 19 | Minimum MEM seed (CLI `-k` default) |
 
 **Bandwidth formula:** `min(256, 16 + query_len / 2)`
 - Short reads (<500bp): bandwidth 26-266
