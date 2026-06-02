@@ -106,6 +106,21 @@ impl Reference {
         Some(contig.bases[start..end].to_vec())
     }
 
+    /// Maps a 0-based position in the forward concatenation to the contig
+    /// containing it, returning the contig name and the 0-based offset within it.
+    /// Returns `None` when `pos` lies past the end of the concatenated sequence.
+    pub fn locate(&self, pos: usize) -> Option<(&str, usize)> {
+        let mut offset = 0;
+        for contig in &self.contigs {
+            let len = contig.len();
+            if pos < offset + len {
+                return Some((contig.name.as_str(), pos - offset));
+            }
+            offset += len;
+        }
+        None
+    }
+
     /// The forward concatenation followed by its reverse complement (the "2N"
     /// sequence), matching how bwa / bwa-mem2 build their FM-index. A single
     /// forward search over this sequence finds matches on both strands: a hit at
@@ -157,5 +172,35 @@ mod tests {
         assert_eq!(ref_seq.contigs.len(), 2);
         assert_eq!(ref_seq.contigs[0].name, "seq1");
         assert_eq!(ref_seq.contigs[1].name, "seq2");
+    }
+
+    #[test]
+    fn locate_first_contig_start() {
+        let r = Reference::parse_fasta(">c1\nACGT\n>c2\nGGGGG").unwrap();
+        assert_eq!(r.locate(0), Some(("c1", 0)));
+    }
+
+    #[test]
+    fn locate_first_contig_end() {
+        let r = Reference::parse_fasta(">c1\nACGT\n>c2\nGGGGG").unwrap();
+        assert_eq!(r.locate(3), Some(("c1", 3)));
+    }
+
+    #[test]
+    fn locate_second_contig_boundary() {
+        let r = Reference::parse_fasta(">c1\nACGT\n>c2\nGGGGG").unwrap();
+        assert_eq!(r.locate(4), Some(("c2", 0)));
+    }
+
+    #[test]
+    fn locate_second_contig_interior() {
+        let r = Reference::parse_fasta(">c1\nACGT\n>c2\nGGGGG").unwrap();
+        assert_eq!(r.locate(8), Some(("c2", 4)));
+    }
+
+    #[test]
+    fn locate_out_of_range() {
+        let r = Reference::parse_fasta(">c1\nACGT\n>c2\nGGGGG").unwrap();
+        assert_eq!(r.locate(9), None);
     }
 }
