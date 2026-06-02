@@ -293,22 +293,6 @@ pub fn mate_fields(
     }
 }
 
-pub fn rescue_orphan(
-    orphan: &AlignmentResult,
-    mate_pos: usize,
-    insert_dist: &InsertSizeDistribution,
-) -> Option<AlignmentResult> {
-    let distance = (orphan.position as i32 - mate_pos as i32).unsigned_abs();
-
-    if distance <= insert_dist.upper_bound() {
-        let mut rescued = orphan.clone();
-        rescued.flag |= 0x8;
-        return Some(rescued);
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

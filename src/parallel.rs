@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use crate::alignment::{Aligner, Scoring};
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
+use crate::paired::InsertSizeDistribution;
 use crate::types::AlignmentResult;
 
 #[derive(Clone)]
@@ -53,6 +54,15 @@ impl ParallelAligner {
 
     pub fn align_single(&self, query: &[u8]) -> Result<AlignmentResult, BwaError> {
         self.inner.align_read(query, None)
+    }
+
+    pub fn rescue_mate(
+        &self,
+        orphan: &[u8],
+        mate: &AlignmentResult,
+        dist: &InsertSizeDistribution,
+    ) -> Option<AlignmentResult> {
+        self.inner.rescue_mate(orphan, mate, dist)
     }
 
     pub fn align_paired(
