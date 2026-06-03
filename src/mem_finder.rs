@@ -1,13 +1,21 @@
 //! Supermaximal MEM finding using binary search.
 //!
 //! This implementation provides O(n log m) expected time MEM finding,
-//! where n is query length and m is reference length.
+//! where n is query length and m is reference length. `find_supermaximal_mems`
+//! is the primary seeding path; `collect_short_seeds` adds bwa's third seeding
+//! round, used only to derive the suboptimal-alignment score for MAPQ.
 
 use crate::fm_index::FMIndex;
 use crate::types::MEM;
 
 pub const DEFAULT_MIN_MEM_LEN: usize = 19;
 pub const DEFAULT_MAX_OCC: usize = 500;
+
+/// bwa's `max_mem_intv` (third seeding round). Short exact seeds whose SA
+/// interval is at most this are collected at every read position so that
+/// inexact secondary loci — where only a portion of the read matches exactly —
+/// surface as chainable seeds.
+pub const MAX_MEM_INTV: usize = 20;
 
 /// Re-seeding splits a long SMEM at its midpoint when the SMEM itself has very
 /// few occurrences but is long enough to harbour a shorter repeated core. The
@@ -49,6 +57,75 @@ fn longest_match_min_occ(
 /// Longest prefix of `query[start..]` (length `>= min_len`) that occurs at all.
 fn longest_match(index: &FMIndex, query: &[u8], start: usize, min_len: usize) -> usize {
     longest_match_min_occ(index, query, start, min_len, 1)
+}
+
+/// Shortest prefix of `query[start..]` (length `>= min_len`, `<= remaining`)
+/// whose occurrence count is `<= max_intv`. Returns 0 when none qualifies.
+fn shortest_match_max_occ(
+    index: &FMIndex,
+    query: &[u8],
+    start: usize,
+    min_len: usize,
+    max_intv: usize,
+) -> usize {
+    let max_possible = query.len().saturating_sub(start);
+    if max_possible < min_len {
+        return 0;
+    }
+    // If the longest possible prefix still occurs too often, no L qualifies.
+    if index.count(&query[start..start + max_possible]) > max_intv {
+        return 0;
+    }
+    // count(min_len) is the largest count among candidates; if already small, done.
+    if index.count(&query[start..start + min_len]) <= max_intv {
+        return min_len;
+    }
+    let mut left = min_len; // count(left) > max_intv
+    let mut right = max_possible; // count(right) <= max_intv
+    while left + 1 < right {
+        let mid = (left + right) / 2;
+        if index.count(&query[start..start + mid]) <= max_intv {
+            right = mid;
+        } else {
+            left = mid;
+        }
+    }
+    right
+}
+
+/// bwa's third seeding round (`bwt_seed_strategy1` with `max_mem_intv`):
+/// scan the read left-to-right, collecting at each position the shortest exact
+/// seed (length `>= min_len`) whose occurrence count is `<= max_intv`, then
+/// advancing past it. Surfaces short low-occurrence seeds (including at inexact
+/// secondary loci) that the SMEM/reseed rounds miss.
+///
+/// These seeds are used only to derive the suboptimal alignment score for MAPQ
+/// (bwa's `sub`/XS); they are intentionally kept out of the primary seeding
+/// path (`find_supermaximal_mems`) so that primary placement is unaffected.
+pub fn collect_short_seeds(
+    index: &FMIndex,
+    query: &[u8],
+    min_len: usize,
+    max_intv: usize,
+) -> Vec<MEM> {
+    let n = query.len();
+    let ref_len = index.len;
+    let mut seeds = Vec::new();
+    let mut x = 0usize;
+    while x + min_len <= n {
+        let len = shortest_match_max_occ(index, query, x, min_len, max_intv);
+        if len == 0 {
+            x += 1;
+            continue;
+        }
+        for &ref_start in &index.find_all_capped(&query[x..x + len], max_intv) {
+            if ref_start as usize + len <= ref_len {
+                seeds.push(MEM::new(x, ref_start as usize, len));
+            }
+        }
+        x += len;
+    }
+    seeds
 }
 
 /// Find supermaximal MEMs using binary search, with an occurrence cap and a
@@ -368,6 +445,117 @@ mod tests {
             "Seeding should expose >= 2 distinct ref loci; got {:?} from MEMs {:?}",
             distinct_ref_starts,
             mems
+        );
+    }
+
+    /// Verify `shortest_match_max_occ` returns the correct boundary length and 0
+    /// when nothing qualifies.
+    ///
+    /// Reference: "ACGTACGT" (8 bp, 2-bit encoded).
+    ///   - "A"       occurs 2 times  (> max_intv=1)
+    ///   - "AC"      occurs 2 times  (> max_intv=1)
+    ///   - "ACG"     occurs 2 times  (> max_intv=1)
+    ///   - "ACGT"    occurs 2 times  (> max_intv=1)
+    ///   - "ACGTA"   occurs 1 time   (<= max_intv=1)  ← boundary
+    ///
+    /// With min_len=1 and max_intv=1, the shortest qualifying prefix from pos 0
+    /// should be length 5 ("ACGTA").
+    ///
+    /// With max_intv=0 nothing qualifies, so 0 is returned.
+    #[test]
+    fn test_shortest_match_max_occ_boundary() {
+        use crate::fm_index::FMIndex;
+        use crate::reference::Reference;
+
+        // ACGTACGT: "ACGT" appears twice, "ACGTA" appears once.
+        let ref_seq = Reference::parse_fasta(">test\nACGTACGT").unwrap();
+        let index = FMIndex::build(&ref_seq);
+
+        // With max_intv=1, the shortest prefix from position 0 of length >= 1
+        // whose count is <= 1 is "ACGTA" (length 5).
+        let len = shortest_match_max_occ(&index, &[0u8, 1, 2, 3, 0, 1, 2, 3], 0, 1, 1);
+        assert_eq!(
+            len, 5,
+            "shortest prefix with count<=1 should be length 5 (ACGTA)"
+        );
+
+        // With max_intv=0 nothing qualifies (every non-empty prefix occurs >= 1 time).
+        let len_none = shortest_match_max_occ(&index, &[0u8, 1, 2, 3, 0, 1, 2, 3], 0, 1, 0);
+        assert_eq!(len_none, 0, "nothing should qualify when max_intv=0");
+
+        // With min_len larger than what remains, should also return 0.
+        let len_short = shortest_match_max_occ(&index, &[0u8, 1, 2, 3], 0, 10, 1);
+        assert_eq!(
+            len_short, 0,
+            "should return 0 when fewer than min_len bases remain"
+        );
+    }
+
+    /// Verify that the third seeding round surfaces a secondary locus that shares
+    /// only a short exact core with the query.
+    ///
+    /// Reference (2-bit encoded, A=0 C=1 G=2 T=3):
+    ///   `TTTTTTACGTACGT` `CCCC` `GGGGGGACGTACGT`
+    ///    locus 1 (0..14)  sep    locus 2 (18..32)
+    ///
+    /// The query `TTTTTTACGTACGT` matches locus 1 in full but shares only the
+    /// `ACGTACGT` core (8 bp, occurs twice) with locus 2. The third round scans
+    /// every position for short low-occurrence matches and must surface a seed in
+    /// locus 2 (ref offset >= 18) covering that core.
+    #[test]
+    fn test_third_round_surfaces_inexact_secondary() {
+        use crate::fm_index::FMIndex;
+        use crate::reference::Reference;
+
+        // Reference: TTTTTTACGTACGT + CCCC + GGGGGGACGTACGT
+        //            0..13           14..17  18..31
+        let fasta = ">t\nTTTTTTACGTACGTCCCCGGGGGGACGTACGT";
+        let ref_seq = Reference::parse_fasta(fasta).unwrap();
+        let index = FMIndex::build(&ref_seq);
+
+        // Query = TTTTTTACGTACGT (14 bp): matches locus 1 exactly.
+        // Locus 2 shares only "ACGTACGT" (8 bp) starting at ref offset 24 (18+6).
+        let encode = |s: &str| -> Vec<u8> {
+            s.bytes()
+                .map(|b| match b {
+                    b'A' => 0,
+                    b'C' => 1,
+                    b'G' => 2,
+                    b'T' => 3,
+                    _ => 4,
+                })
+                .collect()
+        };
+        let query = encode("TTTTTTACGTACGT");
+
+        // Round 1 (SMEM) emits the unique full-query match at locus 1; the
+        // midpoint reseed (round 2) is not guaranteed to land on locus 2's
+        // shared core. The third round (`collect_short_seeds`) scans every
+        // position and finds the 8-mer "ACGTACGT" (count=2 <= MAX_MEM_INTV) at
+        // BOTH loci, so it must surface a seed at locus 2.
+        let min_len = 4;
+        let (primary_mems, _) = find_supermaximal_mems(&index, &query, min_len, DEFAULT_MAX_OCC);
+        let short_seeds = collect_short_seeds(&index, &query, min_len, MAX_MEM_INTV);
+
+        // Locus 2 occupies ref offsets 18..32 (GGGGGG at 18, ACGTACGT at 24).
+        // The third round scans short low-occurrence matches across the read and
+        // must surface at least one seed inside locus 2 covering the shared core.
+        assert!(
+            short_seeds.iter().any(|m| m.ref_start >= 18),
+            "third round must surface a seed in locus 2 (ref_start >= 18); got: {:?}",
+            short_seeds
+        );
+
+        // Combined, the candidate set covers >= 2 distinct ref loci.
+        let distinct: std::collections::HashSet<usize> = primary_mems
+            .iter()
+            .chain(short_seeds.iter())
+            .map(|m| m.ref_start)
+            .collect();
+        assert!(
+            distinct.len() >= 2,
+            "Should expose >= 2 distinct ref loci; got {:?}",
+            distinct
         );
     }
 }

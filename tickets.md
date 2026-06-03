@@ -735,7 +735,7 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   the measurement.
 
 ### T-024: Approximate (inexact) secondary seeding to surface bwa's second-best loci
-- **Status:** OPEN
+- **Status:** FIXED (branch `t024-approx-secondary-seeding`)
 - **Severity:** medium
 - **Affected field(s):** MAPQ, XS (optional tag).
 - **Symptom:** Split from T-021. After T-021's re-seeding + `mem_mark_primary_se`-style
@@ -745,13 +745,37 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   seed across mismatches/indels (e.g. `SRR7733443.26`'s 72 bp core maps at a second
   locus as `96M55S` / `65M1I35M1D26M24S`, not an exact 72 bp MEM). bwa-rs's exact-MEM
   seeding never surfaces that locus, so `sub = 0` → MAPQ 60 and XS values diverge.
-- **Suspected cause:** T-021 surfaces secondaries only where the repeat is an *exact*
-  MEM at ≥2 loci. bwa's candidate set additionally includes chains whose seed is short
-  and shared but whose full alignment is inexact (found via `ksw`/banded extension at
-  each chain), producing a richer `sub`/XS set.
-- **Resolution:** Build alignment candidates from *all* chains (not just exact-repeat
-  reseeds) and let banded extension score each at its locus, so an inexact second-best
-  contributes to `sub`/XS; tighten the `mem_mark_primary_se` clustering to bwa's. This
-  unblocks the remaining T-015 MAPQ residual and XS *value* byte-matching (T-011).
-  Overlaps with **T-022** (faithful pairing score) and is gated on **T-023** for
-  large-set measurement.
+- **Suspected cause:** Two gaps in the T-021 `sub`/XS set. (1) **Tandem-repeat copies**
+  (e.g. the telomeric `CCCTAA` hexamer) collapse into one chain — `chain_seeds` merges
+  seeds within 50 bp and `filter_mems` drops ref-overlapping MEMs — so a read whose core
+  maps to N nearby copies yields one placement, `sub = 0`. (2) **Inexact secondary loci**
+  are never seeded: rounds 1 (SMEM) + 2 (midpoint reseed) miss a short shared exact core.
+- **Resolution:** Ported bwa's **third seeding round** (`bwt_seed_strategy1`,
+  `MAX_MEM_INTV = 20`) as `collect_short_seeds` (`src/mem_finder.rs`): scan the read
+  left-to-right, collect at each position the shortest exact seed (len ≥ min_seed) whose
+  SA interval ≤ 20, advance past it. It is kept **out** of the primary seeding path
+  (`find_supermaximal_mems`) so primary placement is unchanged. `align_read`
+  (`src/alignment.rs`) now derives `sub`/`sub_n` over the **unfiltered** MEMs (keeping
+  tandem copies) **plus** the third-round seeds: each candidate is extended via
+  `build_alignment`, duplicates of the primary dropped by bwa's containment rule
+  (contained in query AND reference, same strand), a candidate at a distinct reference
+  locus overlapping the primary in query space counted as a secondary. Candidates are
+  deduped by (query_start, ref_start) before the DP and by (position, strand) after, and
+  capped at `MAX_SUB_CANDIDATES = 64`. A guard excludes any candidate scoring *above*
+  the chosen primary (bwa's primary is the max-scoring region, so `sub ≤ score`; a
+  higher-scoring candidate is a primary-placement gap, **T-018**, not a secondary). XS
+  is emitted from the resulting `sub`.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t024{,_summary}.md`):** **zero
+  regression** — the 300-uniq set is byte-identical to the clean-master baseline on SAM
+  columns 1–10, and sub2k placement (cols 1–4,6) is frozen. MAPQ vs bwa-mem2 over the
+  sub2k both-mapped records: exact-match **62.3 % → 64.0 %**, mean |MAPQ−bwa| **18.40 →
+  16.25**, over-scoring reads (bwa-rs > bwa) **1329 → 1252**, big over-scorers (>+20)
+  **1238 → 1128**; identically-placed mean |MAPQ−bwa| 11.90 → 11.14. Throughput/RSS
+  unchanged (47 s, 15.2 GB). All unit tests pass; `cargo clippy -- -D warnings` and
+  `cargo fmt --check` clean.
+- **Residual (other root causes — follow-up):** under-scoring rises (26 → 41) — reads
+  where bwa-rs's *primary* is mis-placed (lower AS than bwa-mem2), now exposed by better
+  secondary detection. Byte-matching XS *values* and closing the remaining MAPQ gap need
+  faithful banded (`ksw`) region-extension scoring at each candidate locus and a
+  max-alignment-score primary selection — both change placement, deferred to **T-018**/
+  **T-014**. Overlaps **T-022** (faithful pairing score).
