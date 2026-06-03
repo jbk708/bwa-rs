@@ -185,7 +185,6 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         // and pair_mapq below need the complete InsertSizeDistribution, which is only
         // final once every pair has been aligned.
         let mut r2_iter = r2.into_iter();
-        let mut dist = InsertSizeDistribution::new();
 
         // Step 1: read all pairs into owned storage, preserving input order.
         let mut raw_pairs: Vec<(RawRead, Option<RawRead>)> = Vec::new();
@@ -221,8 +220,9 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         // Step 3: align the whole batch in parallel.
         let mut result_iter = align_all(&aligner, &query_refs)?.into_iter();
 
-        // Step 4: walk results in order to build buf and accumulate dist.
+        // Step 4: walk results in order to build buf and collect FR insert sizes.
         let mut buf: Vec<(ReadAln, Option<ReadAln>)> = Vec::with_capacity(raw_pairs.len());
+        let mut insert_sizes: Vec<u32> = Vec::with_capacity(raw_pairs.len());
         let mut next_result = || {
             result_iter
                 .next()
@@ -239,7 +239,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             let read2 = if let Some(r2) = r2 {
                 let result2 = next_result()?;
                 if let Some(isize) = pair_insert_size(&read1.result, &result2) {
-                    dist.add(isize);
+                    insert_sizes.push(isize);
                 }
                 Some(ReadAln {
                     qname: r2.qname,
@@ -258,6 +258,8 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
                 eprintln!("Processed {} read pairs", count);
             }
         }
+
+        let dist = InsertSizeDistribution::from_insert_sizes(&insert_sizes);
 
         for (mut read1, pair) in buf {
             if let Some(mut read2) = pair {

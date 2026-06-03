@@ -33,8 +33,8 @@ fn proper_fr_pair_flags_and_rnext() {
     let r1 = mapped_read(100, 100, false);
     let r2 = mapped_read(300, 100, true);
 
-    let mut dist = InsertSizeDistribution::new();
-    dist.add(300); // one observation so bounds are computed
+    let sizes: Vec<u32> = (0..12).map(|i| 295 + i).collect();
+    let dist = InsertSizeDistribution::from_insert_sizes(&sizes);
 
     let proper = is_proper_pair(&r1, &r2, &dist);
     assert!(proper, "FR pair within distribution should be proper");
