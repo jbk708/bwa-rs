@@ -93,9 +93,10 @@ impl Aligner {
             return Ok(self.unmapped_result());
         }
 
-        // The primary alignment is chosen from the filtered/chained SMEMs exactly
-        // as before — its placement is independent of the suboptimal-score work
-        // below, so POS/CIGAR/FLAG are unchanged.
+        // Baseline placement: the highest-scoring filtered/chained SMEM, exactly as
+        // before. It anchors the candidate set so primary selection never does worse
+        // than the chain heuristic, and it wins exact score ties below so that
+        // uniquely-mapping reads (already byte-identical to bwa-mem2) stay frozen.
         let mut mems = raw_mems.clone();
         filter_mems(&mut mems);
 
@@ -114,33 +115,14 @@ impl Aligner {
             .max_by(|a, b| a.score.partial_cmp(&b.score).unwrap())
             .ok_or_else(|| BwaError::Alignment("No valid chains".to_string()))?;
 
-        let mut result = self.build_alignment(query, best_chain)?;
+        let baseline = self.build_alignment(query, best_chain)?;
 
-        // bwa's -T: alignments scoring below the threshold are reported unmapped
-        // rather than placing a low-quality partial hit.
-        if result.score < self.min_score {
-            return Ok(self.unmapped_result());
-        }
-
-        // Suboptimal alignment score for MAPQ (bwa's `sub`/`sub_n`). bwa scores
-        // every candidate region, not just the primary chain. Two effects are
-        // captured here that the primary chain misses:
-        //   1. Tandem-repeat copies collapse into a single chain (chain_seeds
-        //      merges seeds within 50 bp and filter_mems drops ref-overlapping
-        //      MEMs), so the *unfiltered* MEMs are used as candidates to keep the
-        //      distinct repeat copies.
-        //   2. Inexact secondary loci, where only a short sub-region matches
-        //      exactly, are surfaced by bwa's third seeding round
-        //      (`collect_short_seeds`, `max_mem_intv`).
-        // Each candidate is extended into a placement and compared against the
-        // primary; the longest candidates anchor the most reliable placements, so
-        // the set is capped to MAX_SUB_CANDIDATES to bound cost on repetitive reads.
-        let pspan = query_span(&result.cigar);
-        let primary_len = pspan.1.saturating_sub(pspan.0);
-        let primary_pos = result.position;
-        let primary_ref_end = primary_pos + result.cigar.reference_length();
-        let primary_reverse = result.reverse_strand;
-
+        // bwa scores every candidate *region* and picks the primary by extended
+        // alignment score, not chain score. Build the same candidate set used for the
+        // suboptimal score — unfiltered MEMs keep tandem-repeat copies, and the third
+        // seeding round (`collect_short_seeds`) surfaces inexact secondary loci — then
+        // extend each into a placement and let a strictly-higher-scoring region replace
+        // the baseline.
         let mut cand_mems = raw_mems;
         cand_mems.extend(collect_short_seeds(
             &self.index,
@@ -148,10 +130,10 @@ impl Aligner {
             self.min_seed_len,
             MAX_MEM_INTV,
         ));
-        // `build_alignment` anchors on (query_start, ref_start) only, so seeds
-        // sharing that corner extend to the same placement; collapse them before
-        // the expensive DP. Keeping the longest among equal corners is arbitrary
-        // (the extension ignores length) but deterministic.
+        // `build_alignment` anchors on (query_start, ref_start) only, so seeds sharing
+        // that corner extend to the same placement; collapse them before the expensive
+        // DP. Keeping the longest among equal corners is arbitrary (the extension
+        // ignores length) but deterministic.
         cand_mems
             .sort_unstable_by_key(|m| (m.query_start, m.ref_start, std::cmp::Reverse(m.length)));
         cand_mems.dedup_by_key(|m| (m.query_start, m.ref_start));
@@ -162,31 +144,50 @@ impl Aligner {
             cand_mems.truncate(MAX_SUB_CANDIDATES);
         }
 
-        // Best score per distinct secondary placement, keyed by (position,
-        // strand). Tandem copies a few bp apart are genuinely distinct placements
-        // and kept separate; different seeds extending to the same alignment are
-        // counted once.
-        let mut secondaries: Vec<(usize, bool, i32)> = Vec::new();
-        for m in &cand_mems {
-            let chained = ChainedSeed::from_mem(*m);
-            let Ok(alt_res) = self.build_alignment(query, &chained) else {
-                continue;
-            };
+        let mut placements: Vec<AlignmentResult> = cand_mems
+            .iter()
+            .filter_map(|m| {
+                let chained = ChainedSeed::from_mem(*m);
+                self.build_alignment(query, &chained).ok()
+            })
+            .collect();
+        placements.push(baseline.clone());
 
-            // bwa's primary is the highest-scoring region, so a true secondary
-            // never outscores it. The primary here is chosen by chain score, not
-            // extended-alignment score, so a candidate can DP-extend above it;
-            // that indicates a primary-placement gap (T-018), not a suboptimal
-            // hit, and counting it would force MAPQ to 0 spuriously — exclude it.
-            if alt_res.score > result.score {
-                continue;
+        // Primary = highest extended-alignment score. The baseline wins exact ties so
+        // uniquely-mapping placements stay byte-identical to bwa-mem2; only a strictly
+        // better region (e.g. a candidate MEM that DP-extends above the chain's pick)
+        // moves the placement. bwa's coordinate/strand tie-break is unnecessary because
+        // ties retain the baseline.
+        let mut result = baseline;
+        for p in &placements {
+            if p.score > result.score {
+                result = p.clone();
             }
+        }
 
+        // bwa's -T: alignments scoring below the threshold are reported unmapped
+        // rather than placing a low-quality partial hit.
+        if result.score < self.min_score {
+            return Ok(self.unmapped_result());
+        }
+
+        // Suboptimal alignment score for MAPQ (bwa's `sub`/`sub_n`). The primary is now
+        // the maximal-scoring region, so a candidate at a distinct reference locus that
+        // overlaps the primary in query space is a genuine secondary; no guard against
+        // candidates outscoring the primary is needed (none can).
+        let pspan = query_span(&result.cigar);
+        let primary_len = pspan.1.saturating_sub(pspan.0);
+        let primary_pos = result.position;
+        let primary_ref_end = primary_pos + result.cigar.reference_length();
+        let primary_reverse = result.reverse_strand;
+
+        // Best score per distinct secondary placement, keyed by (position, strand).
+        let mut secondaries: Vec<(usize, bool, i32)> = Vec::new();
+        for alt_res in &placements {
             // A placement contained in the primary in BOTH query and reference
-            // (same strand) is the primary alignment re-derived from one of its
-            // own seeds — bwa's mem_sort_dedup_patch containment rule — so it is
-            // not a secondary. A placement that overlaps the primary in query
-            // space but sits at a different reference locus is a real secondary.
+            // (same strand) is the primary alignment re-derived from one of its own
+            // seeds — bwa's mem_sort_dedup_patch containment rule — so it is not a
+            // secondary. This also excludes the chosen primary itself.
             let alt_ref_end = alt_res.position + alt_res.cigar.reference_length();
             let cspan = query_span(&alt_res.cigar);
             let query_contained = cspan.0 >= pspan.0 && cspan.1 <= pspan.1;
@@ -1953,6 +1954,107 @@ mod tests {
             unique_result.mapq, 60,
             "unique read must have mapq=60; xs={}",
             unique_result.xs
+        );
+    }
+
+    // ---- T-025: primary selection by extended-alignment score ----
+
+    /// Two-locus reference engineered so the chain heuristic (longest exact seed)
+    /// picks the WRONG locus:
+    ///
+    ///   Locus A (ref[0..30]): exact copy of read[0..30].  Chain score = 30 (one
+    ///     30-bp MEM).  Extension soft-clips read[31..50] because ref[30..] is
+    ///     all-G junk → extended-alignment score = 30.
+    ///
+    ///   Locus B (ref[100..150]): near-copy of the full 50-bp read with single-base
+    ///     mismatches at read positions 10, 20, and 30.  The mismatches break the
+    ///     50-bp alignment into exact segments of 10, 9, 9, and 19 bp.  All segments
+    ///     are shorter than the 30-bp MEM at locus A; the only segment >= min_seed_len
+    ///     that is NOT superseded by the locus-A MEM is the 19-bp tail at
+    ///     read[31..50] / ref[131..150].  That sole locus-B seed gives chain score
+    ///     19 < 30, so the chain heuristic picks locus A.  Extended-alignment score
+    ///     at locus B: 47 matches - 3 x 4 = 35 > 30.
+    ///
+    /// T-025 must select locus B (pos 100).  This test FAILS on the pre-T-025 code
+    /// (which returns pos=0) and PASSES after.
+    #[test]
+    fn test_primary_selected_by_max_extended_score() {
+        // Encode: A=0, C=1, G=2, T=3.
+        //
+        // 50-bp hand-chosen non-repetitive read.  No 10-bp window appears twice
+        // so the FM-index finds at most one occurrence per seed.  The anchor half
+        // (read[0..30]) and the tail half (read[30..50]) are constructed to be
+        // distinct: the anchor uses an ACTAGCT... pattern; the tail uses TGCAAT...
+        #[rustfmt::skip]
+        let read_bases: Vec<u8> = vec![
+            // read[0..30]: locus-A anchor
+            0,1,3,0,2,1,3,3,2,0,  // ACTAGCTTGA
+            1,3,2,0,1,0,3,1,2,3,  // CTGACTGACT  <- position 10: read[10]=1(C)
+            3,2,0,1,0,3,1,2,0,3,  // TGACATCGAT  <- position 20: read[20]=0(A)
+            // read[30..50]: includes mismatch at position 30 of locus_B then 19-bp tail
+            3,2,1,0,0,3,1,2,3,3,  // TGCAAATCTT  <- position 30: read[30]=3(T)
+            2,0,1,3,2,0,1,0,3,1,  // GACTGACTGA
+        ];
+        assert_eq!(read_bases.len(), 50);
+
+        // Locus B = near-copy of read with 3 mismatches; each flipped by +1 mod 4.
+        let mut locus_b: Vec<u8> = read_bases.clone();
+        locus_b[10] = (read_bases[10] + 1) % 4; // C -> G
+        locus_b[20] = (read_bases[20] + 1) % 4; // A -> C
+        locus_b[30] = (read_bases[30] + 1) % 4; // T -> A
+
+        // Reference layout (forward-only, 160 bp total):
+        //   [0..30]   locus A: exact copy of read[0..30]
+        //   [30..100] junk: all G=2 (70 bp — mismatches all non-G read bases)
+        //   [100..150] locus B: 50-bp near-copy (3 mismatches at 10, 20, 30)
+        //   [150..160] padding: all A=0
+        let mut ref_raw: Vec<u8> = Vec::with_capacity(160);
+        ref_raw.extend_from_slice(&read_bases[..30]);
+        ref_raw.extend(std::iter::repeat(2u8).take(70));
+        ref_raw.extend_from_slice(&locus_b);
+        ref_raw.extend(std::iter::repeat(0u8).take(10));
+        assert_eq!(ref_raw.len(), 160);
+
+        let base_chars = ['A', 'C', 'G', 'T'];
+        let fasta_body: String = ref_raw.iter().map(|&b| base_chars[b as usize]).collect();
+        let fasta = format!(">t\n{fasta_body}");
+
+        let ref_seq = Reference::parse_fasta(&fasta).unwrap();
+        let ref_data = ref_seq.as_slice().to_vec();
+        let index = FMIndexAlias::build(&ref_seq);
+        // min_seed_len(10) so both loci produce seeds; min_score(0) so the 30-bp
+        // partial hit at locus A is not suppressed.
+        let aligner = Aligner::new(index, ref_data).min_seed_len(10).min_score(0);
+
+        let result = aligner.align_read(&read_bases, None).unwrap();
+
+        assert_eq!(result.flag & 0x4, 0, "read should be mapped");
+
+        // Chain heuristic (pre-T-025 behaviour):
+        //   read[0..30] -> 30-bp MEM at locus A (ref 0).  Chain score = 30.
+        //   read[11..20] and read[21..30] -> 9-bp segments below min_seed_len; not found.
+        //   read[31..50] -> 19-bp MEM at locus B tail (ref 131).  Chain score = 19.
+        //   (read[0..10] at locus-B / ref[100..110] is superseded at query_start=0 by
+        //   locus A's 30-bp MEM.)  Gap between chains > 50 bp: no merge.  Chain picks A.
+        //
+        // Extended-alignment scores:
+        //   Locus A: 30 exact matches, then 20-base soft-clip (junk) -> score = 30.
+        //   Locus B (seeded at read[31..50] / ref[131..150]):
+        //     backward over read[0..31] / ref[100..131]: 10= 1X 9= 1X 9= 1X -> 28 matches, 3 mm
+        //     forward over read[31..50] / ref[131..150]:  19= -> 19 matches
+        //     compute_alignment_score: 47 matches - 3 x 4 = 35 > 30.
+        //
+        // T-025 must pick locus B (pos 100).
+        assert_eq!(
+            result.position, 100,
+            "T-025: primary must be at locus B (pos 100, extended score 35); \
+             got pos={} score={} cigar={}",
+            result.position, result.score, result.cigar
+        );
+        assert!(
+            result.score >= 30,
+            "locus-B extended score {} must be >= 30",
+            result.score
         );
     }
 
