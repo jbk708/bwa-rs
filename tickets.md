@@ -785,16 +785,18 @@ placement-fidelity diffs now consolidated into Phase 2 (T-025 … T-027).
 
 ---
 
-## Phase 2: placement fidelity (OPEN)
+## Phase 2: placement fidelity (T-025, T-026 FIXED; T-027 OPEN)
 
 The remaining sub2k divergence (POS 40.7 %, CIGAR 34.1 %, with FLAG/TLEN/MAPQ
 cascading) is one root cause — final alignment placement on repetitive,
 heavily-soft-clipped, multi-mapping reads — broken into the three pieces of bwa's
 `mem_align1_core` that bwa-rs still approximates. **T-025** is the smallest and
 unblocks the others; **T-026** is the deep core; **T-027** refines the candidate
-set. Verification: the `sub2k` set (Phase-2 target); the `uniq` set stays the
-zero-regression gate (it is already at parity, so any placement change there is a
-regression).
+set. **T-025 + T-026 cut sub2k POS 40.7 % → 31.1 % and CIGAR 34.1 % → 25.9 %** with
+zero uniq regression; **T-027** (chain filtering) remains, mainly to close the MAPQ
+over-scoring the faithful placement now exposes. Verification: the `sub2k` set
+(Phase-2 target); the `uniq` set stays the zero-regression gate (it is already at
+parity, so any placement change there is a regression).
 
 ### T-025: Select the primary by extended-alignment score, not chain score
 - **Status:** FIXED (branch `t025-max-score-primary`)
@@ -845,7 +847,7 @@ regression).
 - **Dependencies:** Builds on the T-024 candidate machinery. Feeds **T-026**.
 
 ### T-026: Faithful `mem_chain2aln` / `ksw_extend` region extension (end-bonus banded SW)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t026-ksw-extend`)
 - **Severity:** high (the deep core — remaining 1–10 bp POS shifts and soft-clip boundaries)
 - **Affected field(s):** POS, CIGAR, AS, NM, MD, MAPQ.
 - **Symptom:** Even where bwa-rs and bwa agree on the locus, the extended alignment
@@ -865,6 +867,35 @@ regression).
   the single-seed `build_alignment`. Reuse the T-024 candidate set as the region inputs.
   This is the largest single change and subsumes the T-018 (banded SW) and T-014 (scoring
   tie-break) residuals. Measure POS/CIGAR/AS on `sub2k`; guard `uniq` for zero regression.
+- **Resolution (implemented):** Replaced the seed-start-anchored banded affine DP
+  (`affine_extend_forward` / `extend_seed_backward`) on the `build_alignment` path with
+  bwa's region-extension model (`src/alignment.rs`):
+  (1) **`ksw_extend`** — a faithful port of bwa's `ksw_extend2` (scoring only): extends
+  from the locked seed score `h0 = seed_len·match`, returning the local max
+  `(score, qle, tle)` and the best query-end-reaching score `(gscore, gtle)`. Banded
+  (`KSW_BAND_WIDTH = 100`) with bwa's per-row band shrink and `KSW_ZDROP = 100` X-drop.
+  (2) **`ksw_global`** — banded affine global alignment with affine traceback, rendering
+  the Eq/X/I/D CIGAR over the window `ksw_extend` determines (bwa's `ksw_global2`).
+  (3) **`build_alignment`** now locks the exact seed `[qs,qe]×[rs,re]`, right-extends
+  `query[qe..]`/`ref[re..]` and left-extends the reversed upstream slices (each with `h0`
+  and `end_bonus = clip_penalty = 5`), chooses to-end vs local per side via
+  `gscore + end_bonus > score`, assembles the window `[qb,qend]×[rb,rend]`, and runs
+  `ksw_global` for the core CIGAR with soft-clipped flanks. The nm/score/2N→forward-remap/MD
+  tail and `align_read`'s T-024/T-025 candidate-set + max-extended-score primary selection
+  are unchanged. The old extension fns stay (`pub`, unit-tested) but off the hot path.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t026{,_summary}.md`):** **zero
+  regression on uniq, large sub2k improvement.** 300-uniq: POS 0, CIGAR 2, TLEN 0 (all
+  unchanged); MAPQ 4 → **2** — the only two changed reads (`100142`/`100189`) move *to*
+  bwa-mem2's MAPQ 60, POS/CIGAR/FLAG/TLEN byte-identical to T-025. sub2k: POS 38.0% →
+  **31.1%** (−276), CIGAR 30.0% → **25.9%** (−163), RNAME/RNEXT 2.0% → **0.6%**, PNEXT
+  −276, FLAG 36.0% → 33.8%, TLEN 48.4% → 44.2%, SEQ/QUAL 17.3% → 14.5%; identically-placed
+  reads **2405 → 2578 (+173)**. Throughput/RSS unchanged (35 s, 15.72 GB). 286 unit tests
+  pass (6 new `ksw_extend_*` / `ksw_global_*`); `cargo clippy -- -D warnings` and
+  `cargo fmt --check` clean.
+- **Residual (other root cause — follow-up):** identically-placed MAPQ exact-match dips
+  73.3% → 69.5% with bwa-rs scoring **higher** on 719 (27.9%) and lower on only 67 (2.6%) —
+  the newly-correctly-placed reads are heavily soft-clipped repeats bwa grades **down** via
+  chain filtering (`mem_chain_flt`) and deeper region scoring. Closing it is **T-027**.
 - **Dependencies:** **T-025** (max-score primary selection over the extended regions).
 
 ### T-027: Chain filtering (`mem_chain_flt`) to prune weak/contained chains

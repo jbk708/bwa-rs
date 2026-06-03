@@ -20,6 +20,11 @@ const MAX_SUB_CANDIDATES: usize = 64;
 // primary for a candidate to be treated as a secondary (masked) hit.
 const MASK_LEVEL: f32 = 0.5;
 
+// bwa ksw_extend defaults (bwa-mem2 -w 100, -d 100): banded SW band half-width and
+// the Z-drop X-drop threshold. end_bonus is the clip penalty (bwa pen_clip5/3).
+const KSW_BAND_WIDTH: i32 = 100;
+const KSW_ZDROP: i32 = 100;
+
 #[derive(Clone, Debug)]
 pub struct Scoring {
     pub match_score: i32,
@@ -243,44 +248,78 @@ impl Aligner {
         let ref_seq = &self.reference;
         let seed = &chain.mem;
         let query_len = query.len();
+        let a = self.scoring.match_score;
+        let end_bonus = self.scoring.clip_penalty;
+        let bw = KSW_BAND_WIDTH as usize;
 
-        let bw = optimal_bandwidth(query_len);
+        let qs = seed.query_start.min(query_len);
+        let qe = (seed.query_start + seed.length).min(query_len);
+        let rs = seed.ref_start.min(ref_seq.len());
+        let re = (seed.ref_start + seed.length).min(ref_seq.len());
+        let seed_len = qe.saturating_sub(qs);
+        let h0 = seed_len as i32 * a;
 
-        let backward = extend_seed_backward(
-            &query[..seed.query_start],
-            ref_seq,
-            seed.ref_start,
-            &self.scoring,
-            bw,
-        );
+        // Right extension: lock the seed (h0) and extend query[qe..] against ref[re..].
+        // Choose to-end (reach query end, soft-clip nothing) when the end-bonus makes it
+        // win; otherwise stop at the local max and soft-clip the tail.
+        let (right_q, right_t) = if qe >= query_len {
+            (0usize, 0usize)
+        } else {
+            let q = &query[qe..];
+            let t_end = (re + (query_len - qe) + bw + 1).min(ref_seq.len());
+            let t = &ref_seq[re..t_end];
+            if t.is_empty() {
+                (0, 0)
+            } else {
+                let r = ksw_extend(q, t, &self.scoring, end_bonus, h0);
+                if r.gscore > 0 && r.gscore + end_bonus > r.score {
+                    (query_len - qe, r.gtle)
+                } else {
+                    (r.qle, r.tle)
+                }
+            }
+        };
 
-        // Anchor at the seed's start corner; the seed interior is free to absorb
-        // mismatches or gaps rather than being pinned as all-Eq.
-        let forward = affine_extend_forward(
-            &query[seed.query_start..],
-            ref_seq,
-            seed.ref_start,
-            &self.scoring,
-            bw,
-        );
+        // Left extension: reverse the upstream query/reference so the same forward
+        // extension runs leftward from the seed start corner.
+        let (left_q, left_t) = if qs == 0 || rs == 0 {
+            (0usize, 0usize)
+        } else {
+            let q: Vec<u8> = query[..qs].iter().rev().copied().collect();
+            let t_lo = rs.saturating_sub(qs + bw + 1);
+            let t: Vec<u8> = ref_seq[t_lo..rs].iter().rev().copied().collect();
+            if t.is_empty() {
+                (0, 0)
+            } else {
+                let r = ksw_extend(&q, &t, &self.scoring, end_bonus, h0);
+                if r.gscore > 0 && r.gscore + end_bonus > r.score {
+                    (qs, r.gtle)
+                } else {
+                    (r.qle, r.tle)
+                }
+            }
+        };
 
-        let leading_clip = seed.query_start - backward.query_end;
-        let trailing_clip = (query_len - seed.query_start) - forward.query_end;
+        let qb = qs - left_q;
+        let qend = qe + right_q;
+        let rb = rs - left_t;
+        let rend = re + right_t;
+
+        // Render the CIGAR over the determined window with a banded global alignment
+        // (the seed region in the middle is exact, so it aligns as matches).
+        let core = ksw_global(&query[qb..qend], &ref_seq[rb..rend], &self.scoring, bw);
 
         let mut cigar = Cigar::new();
-
-        if leading_clip > 0 {
-            cigar.push(CigarOp::S, leading_clip as u32);
+        if qb > 0 {
+            cigar.push(CigarOp::S, qb as u32);
         }
-        cigar.extend(backward.cigar);
-        cigar.extend(forward.cigar);
+        cigar.extend(core);
+        let trailing_clip = query_len - qend;
         if trailing_clip > 0 {
             cigar.push(CigarOp::S, trailing_clip as u32);
         }
 
-        // A backward extension reports `ref_end` as the leftmost reference base it
-        // consumed, which is the alignment's absolute start.
-        let ref_start = backward.ref_end;
+        let ref_start = rb;
 
         // nm / score are mismatch/indel counts, invariant to strand, so they are
         // computed in the space the alignment was built in (2N for a build_2n index).
@@ -1007,6 +1046,310 @@ pub fn affine_extend_forward(
         ref_end: start_pos + end_j,
         cigar,
     }
+}
+
+struct KswExtend {
+    score: i32,
+    qle: usize,
+    tle: usize,
+    gscore: i32,
+    gtle: usize,
+}
+
+/// Faithful port of bwa's `ksw_extend2` (scoring only, no traceback). Extends
+/// `query` against `target` from the origin starting at accumulated score `h0`
+/// (the locked seed score). Returns the local maximum `(score, qle, tle)` and the
+/// best query-end-reaching score `(gscore, gtle)`. Symmetric affine gaps. Banded
+/// with band-shrink and Z-drop early termination; `end_bonus` biases reaching the
+/// query end (used by the caller to choose to-end vs soft-clipped extension).
+fn ksw_extend(
+    query: &[u8],
+    target: &[u8],
+    scoring: &Scoring,
+    end_bonus: i32,
+    h0: i32,
+) -> KswExtend {
+    let qlen = query.len();
+    let tlen = target.len();
+    let a = scoring.match_score;
+    let b = scoring.mismatch_penalty;
+    let o = scoring.gap_open;
+    let e = scoring.gap_extend;
+    let oe = o + e;
+
+    if qlen == 0 || tlen == 0 {
+        return KswExtend {
+            score: h0,
+            qle: 0,
+            tle: 0,
+            gscore: -1,
+            gtle: 0,
+        };
+    }
+
+    let mut eh_h = vec![0i32; qlen + 1];
+    let mut eh_e = vec![0i32; qlen + 1];
+
+    eh_h[0] = h0;
+    eh_h[1] = if h0 > oe { h0 - oe } else { 0 };
+    let mut j = 2usize;
+    while j <= qlen && eh_h[j - 1] > e {
+        eh_h[j] = eh_h[j - 1] - e;
+        j += 1;
+    }
+
+    let mut w = KSW_BAND_WIDTH;
+    let max_ins =
+        (((qlen as f64 * a as f64 + end_bonus as f64 - o as f64) / e as f64 + 1.0) as i32).max(1);
+    if w > max_ins {
+        w = max_ins;
+    }
+    let max_del =
+        (((qlen as f64 * a as f64 + end_bonus as f64 - o as f64) / e as f64 + 1.0) as i32).max(1);
+    if w > max_del {
+        w = max_del;
+    }
+
+    let mut max = h0;
+    let mut max_i: i32 = -1;
+    let mut max_j: i32 = -1;
+    let mut max_ie: i32 = -1;
+    let mut gscore: i32 = -1;
+    let mut beg: i32 = 0;
+    let mut end: i32 = qlen as i32;
+
+    for (i, &tgt) in target.iter().enumerate() {
+        let mut f = 0i32;
+        let mut m = 0i32;
+        let mut mj: i32 = -1;
+
+        if beg < i as i32 - w {
+            beg = i as i32 - w;
+        }
+        if end > i as i32 + w + 1 {
+            end = i as i32 + w + 1;
+        }
+        if end > qlen as i32 {
+            end = qlen as i32;
+        }
+
+        let mut h1 = if beg == 0 {
+            (h0 - (o + e * (i as i32 + 1))).max(0)
+        } else {
+            0
+        };
+
+        let mut jc = beg;
+        while jc < end {
+            let col = jc as usize;
+            let mut mscore = eh_h[col];
+            let ecur = eh_e[col];
+            eh_h[col] = h1;
+            let s = if query[col] == tgt { a } else { -b };
+            mscore = if mscore != 0 { mscore + s } else { 0 };
+            let mut h = mscore.max(ecur);
+            h = h.max(f);
+            h1 = h;
+            if m <= h {
+                mj = jc;
+                m = h;
+            }
+            let mut t = mscore - oe;
+            if t < 0 {
+                t = 0;
+            }
+            let mut enew = ecur - e;
+            if enew < t {
+                enew = t;
+            }
+            eh_e[col] = enew;
+            let mut t2 = mscore - oe;
+            if t2 < 0 {
+                t2 = 0;
+            }
+            f -= e;
+            if f < t2 {
+                f = t2;
+            }
+            jc += 1;
+        }
+        eh_h[end as usize] = h1;
+        eh_e[end as usize] = 0;
+
+        if end == qlen as i32 && gscore <= h1 {
+            max_ie = i as i32;
+            gscore = h1;
+        }
+        if m == 0 {
+            break;
+        }
+        if m > max {
+            max = m;
+            max_i = i as i32;
+            max_j = mj;
+        } else if KSW_ZDROP > 0 {
+            let di = i as i32 - max_i;
+            let dj = mj - max_j;
+            let drop = if di > dj {
+                max - m - (di - dj) * e
+            } else {
+                max - m - (dj - di) * e
+            };
+            if drop > KSW_ZDROP {
+                break;
+            }
+        }
+
+        let mut nb = beg;
+        while nb < end && eh_h[nb as usize] == 0 && eh_e[nb as usize] == 0 {
+            nb += 1;
+        }
+        beg = nb;
+        let mut ne = end;
+        while ne >= beg && eh_h[ne as usize] == 0 && eh_e[ne as usize] == 0 {
+            ne -= 1;
+        }
+        end = if ne + 2 < qlen as i32 {
+            ne + 2
+        } else {
+            qlen as i32
+        };
+    }
+
+    KswExtend {
+        score: max,
+        qle: (max_j + 1).max(0) as usize,
+        tle: (max_i + 1).max(0) as usize,
+        gscore,
+        gtle: (max_ie + 1).max(0) as usize,
+    }
+}
+
+/// Banded affine-gap *global* alignment of `query` against `target` (both ends
+/// anchored at the corners), returning the optimal-score CIGAR (Eq/X/I/D) over the
+/// whole rectangle. Used to render the CIGAR over the window `ksw_extend`
+/// determines, mirroring bwa's `ksw_global2`. Axes: query = rows (I consumes
+/// query), target = cols (D consumes target).
+fn ksw_global(query: &[u8], target: &[u8], scoring: &Scoring, bw: usize) -> Cigar {
+    let ql = query.len();
+    let tl = target.len();
+    let mut cig = Cigar::new();
+    if ql == 0 {
+        if tl > 0 {
+            cig.push(CigarOp::D, tl as u32);
+        }
+        return cig;
+    }
+    if tl == 0 {
+        cig.push(CigarOp::I, ql as u32);
+        return cig;
+    }
+    let a = scoring.match_score;
+    let b = scoring.mismatch_penalty;
+    let o = scoring.gap_open;
+    let e = scoring.gap_extend;
+    let oe = o + e;
+    let neg = i32::MIN / 4;
+    let band = bw.max(ql.abs_diff(tl)) + 1;
+
+    let cols = tl + 1;
+    let mut h = vec![neg; (ql + 1) * cols];
+    let mut em = vec![neg; (ql + 1) * cols];
+    let mut fm = vec![neg; (ql + 1) * cols];
+    let at = |i: usize, j: usize| i * cols + j;
+
+    h[at(0, 0)] = 0;
+    for jj in 1..=tl.min(band) {
+        em[at(0, jj)] = -(o + e * jj as i32);
+        h[at(0, jj)] = em[at(0, jj)];
+    }
+    for i in 1..=ql {
+        let jlo = i.saturating_sub(band).max(1);
+        let jhi = (i + band).min(tl);
+        if i <= band {
+            fm[at(i, 0)] = -(o + e * i as i32);
+            h[at(i, 0)] = fm[at(i, 0)];
+        }
+        for jj in jlo..=jhi {
+            let s = if query[i - 1] == target[jj - 1] {
+                a
+            } else {
+                -b
+            };
+            let diag = h[at(i - 1, jj - 1)];
+            let mv = if diag <= neg / 2 { neg } else { diag + s };
+            let ev = h[at(i, jj - 1)]
+                .saturating_sub(oe)
+                .max(em[at(i, jj - 1)].saturating_sub(e));
+            em[at(i, jj)] = ev;
+            let fv = h[at(i - 1, jj)]
+                .saturating_sub(oe)
+                .max(fm[at(i - 1, jj)].saturating_sub(e));
+            fm[at(i, jj)] = fv;
+            h[at(i, jj)] = mv.max(ev).max(fv);
+        }
+    }
+
+    #[derive(PartialEq)]
+    enum St {
+        H,
+        E,
+        F,
+    }
+    let mut ops: Vec<CigarOp> = Vec::new();
+    let (mut i, mut j) = (ql, tl);
+    let mut st = St::H;
+    while i > 0 || j > 0 {
+        match st {
+            St::H => {
+                if i > 0 && j > 0 {
+                    let is_match = query[i - 1] == target[j - 1];
+                    let s = if is_match { a } else { -b };
+                    let diag = h[at(i - 1, j - 1)];
+                    let mv = if diag <= neg / 2 { neg } else { diag + s };
+                    if h[at(i, j)] == mv {
+                        ops.push(if is_match { CigarOp::Eq } else { CigarOp::X });
+                        i -= 1;
+                        j -= 1;
+                        continue;
+                    }
+                }
+                if j > 0 && h[at(i, j)] == em[at(i, j)] {
+                    st = St::E;
+                    continue;
+                }
+                if i > 0 && h[at(i, j)] == fm[at(i, j)] {
+                    st = St::F;
+                    continue;
+                }
+                if j > 0 {
+                    ops.push(CigarOp::D);
+                    j -= 1;
+                } else if i > 0 {
+                    ops.push(CigarOp::I);
+                    i -= 1;
+                }
+            }
+            St::E => {
+                let extend = em[at(i, j)] == em[at(i, j - 1)].saturating_sub(e);
+                ops.push(CigarOp::D);
+                j -= 1;
+                if !extend {
+                    st = St::H;
+                }
+            }
+            St::F => {
+                let extend = fm[at(i, j)] == fm[at(i - 1, j)].saturating_sub(e);
+                ops.push(CigarOp::I);
+                i -= 1;
+                if !extend {
+                    st = St::H;
+                }
+            }
+        }
+    }
+    ops.reverse();
+    Cigar::compress(ops)
 }
 
 fn traceback_affine(
@@ -2081,5 +2424,170 @@ mod tests {
         let (s, e) = query_span(&c);
         assert_eq!(s, 0);
         assert_eq!(e, 20);
+    }
+
+    // ---- T-026: ksw_extend + ksw_global unit tests ----
+
+    #[test]
+    fn ksw_extend_exact_match_reaches_end() {
+        let scoring = Scoring::default();
+        let query = enc("ACGTACGTAC");
+        let target = query.clone();
+        // h0 > 0 seeds the diagonal so the local-alignment accumulates;
+        // using one match_score unit simulates "one previously matched base".
+        let h0 = scoring.match_score;
+        let end_bonus = 5;
+        let r = ksw_extend(&query, &target, &scoring, end_bonus, h0);
+        // Expected: h0 + qlen * match_score accumulated along the exact diagonal.
+        let expected_gscore = h0 + query.len() as i32 * scoring.match_score;
+        assert_eq!(
+            r.gscore, expected_gscore,
+            "gscore should equal seed score + full-length match score"
+        );
+        assert_eq!(r.qle, query.len(), "qle should reach end of query");
+        assert_eq!(r.tle, target.len(), "tle should reach end of target");
+    }
+
+    #[test]
+    fn ksw_extend_local_stops_before_bad_tail() {
+        let scoring = Scoring::default();
+        // Prefix of 8 bases match; tail of 4 bases are all mismatches
+        let prefix = enc("ACGTACGT");
+        let prefix_len = prefix.len();
+        // tail = TTTT = [3,3,3,3] — all different from anything in prefix context
+        let bad_tail: Vec<u8> = vec![3, 3, 3, 3];
+        let mut query = prefix.clone();
+        query.extend_from_slice(&bad_tail);
+        // target: same prefix, then all-G junk at the end
+        let mut target = prefix.clone();
+        target.extend(std::iter::repeat(2u8).take(4));
+
+        let r = ksw_extend(&query, &target, &scoring, 0, 0);
+        // The local maximum should be at most the matching prefix length
+        assert!(
+            r.qle <= prefix_len,
+            "qle={} should stop at or before prefix end {}",
+            r.qle,
+            prefix_len
+        );
+        // gscore should be strictly less than score (so caller would soft-clip)
+        assert!(
+            r.gscore < r.score,
+            "gscore={} should be less than local max score={} when tail is bad",
+            r.gscore,
+            r.score
+        );
+    }
+
+    #[test]
+    fn ksw_global_exact_match() {
+        let scoring = Scoring::default();
+        let query = enc("ACGTACGT");
+        let len = query.len();
+        let target = query.clone();
+        let cigar = ksw_global(&query, &target, &scoring, KSW_BAND_WIDTH as usize);
+        assert_eq!(
+            cigar.reference_length(),
+            len,
+            "reference_length should equal sequence length"
+        );
+        assert_eq!(
+            cigar.ops.len(),
+            1,
+            "exact match should compress to a single op; got {}",
+            cigar
+        );
+        assert_eq!(
+            cigar.ops[0].0,
+            CigarOp::Eq,
+            "single op should be Eq for exact match"
+        );
+    }
+
+    #[test]
+    fn ksw_global_single_mismatch() {
+        let scoring = Scoring::default();
+        let query = enc("ACGTACGT");
+        let len = query.len();
+        // one mismatch in the middle: position 4 (T->A)
+        let mut target = query.clone();
+        target[4] = (target[4] + 1) % 4;
+        let cigar = ksw_global(&query, &target, &scoring, KSW_BAND_WIDTH as usize);
+        assert_eq!(
+            cigar.reference_length(),
+            len,
+            "reference_length should equal len"
+        );
+        // Should have at least one X op
+        let has_x = cigar.ops.iter().any(|(op, _)| *op == CigarOp::X);
+        assert!(
+            has_x,
+            "CIGAR should contain an X op for the mismatch; got {}",
+            cigar
+        );
+        // No I or D expected (same length)
+        let has_indel = cigar
+            .ops
+            .iter()
+            .any(|(op, _)| matches!(op, CigarOp::I | CigarOp::D));
+        assert!(
+            !has_indel,
+            "no indels expected for single-mismatch alignment; got {}",
+            cigar
+        );
+    }
+
+    #[test]
+    fn ksw_global_insertion() {
+        let scoring = Scoring::default();
+        // query is one base longer than target: extra base at position 4
+        let target = enc("ACGTACGT");
+        let mut query = enc("ACGT");
+        query.push(2); // extra G inserted
+        query.extend_from_slice(&enc("ACGT"));
+        let cigar = ksw_global(&query, &target, &scoring, KSW_BAND_WIDTH as usize);
+        assert_eq!(
+            cigar.reference_length(),
+            target.len(),
+            "reference_length should equal target length"
+        );
+        let ins_count: u32 = cigar
+            .ops
+            .iter()
+            .filter(|(op, _)| *op == CigarOp::I)
+            .map(|(_, l)| *l)
+            .sum();
+        assert_eq!(
+            ins_count, 1,
+            "should have exactly 1 inserted base; got {}",
+            cigar
+        );
+    }
+
+    #[test]
+    fn ksw_global_deletion() {
+        let scoring = Scoring::default();
+        // target is one base longer than query: extra base at position 4
+        let query = enc("ACGTACGT");
+        let mut target = enc("ACGT");
+        target.push(2); // extra G in reference
+        target.extend_from_slice(&enc("ACGT"));
+        let cigar = ksw_global(&query, &target, &scoring, KSW_BAND_WIDTH as usize);
+        assert_eq!(
+            cigar.reference_length(),
+            target.len(),
+            "reference_length should equal target length"
+        );
+        let del_count: u32 = cigar
+            .ops
+            .iter()
+            .filter(|(op, _)| *op == CigarOp::D)
+            .map(|(_, l)| *l)
+            .sum();
+        assert_eq!(
+            del_count, 1,
+            "should have exactly 1 deleted base; got {}",
+            cigar
+        );
     }
 }
