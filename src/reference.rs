@@ -82,7 +82,7 @@ impl Reference {
             'G' => Ok(0b10),
             'T' => Ok(0b11),
             'N' => Ok(0b100),
-            _ => Err(BwaError::Parse(format!("Invalid base: {}", base))),
+            _ => Ok(0b100),
         }
     }
 
@@ -163,6 +163,25 @@ mod tests {
         assert_eq!(Reference::encode_base('T').unwrap(), 3);
         assert_eq!(Reference::decode_base(0), 'A');
         assert_eq!(Reference::decode_base(3), 'T');
+    }
+
+    #[test]
+    fn test_iupac_codes_map_to_n() {
+        assert_eq!(Reference::encode_base('N').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('M').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('R').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('Y').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('S').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('W').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('K').unwrap(), 0b100);
+        assert_eq!(Reference::encode_base('m').unwrap(), 0b100);
+    }
+
+    #[test]
+    fn test_parse_fasta_with_iupac_codes() {
+        let fasta = ">c\nACGMRTN";
+        let reference = Reference::parse_fasta(fasta).unwrap();
+        assert_eq!(reference.contigs[0].bases, vec![0, 1, 2, 4, 4, 3, 4]);
     }
 
     #[test]

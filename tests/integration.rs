@@ -532,6 +532,14 @@ fn test_sam_format_complete() -> Result<(), BwaError> {
 }
 
 #[test]
+fn test_index_reference_with_iupac_codes() -> Result<(), BwaError> {
+    let iupac_ref = ">iupac_contig\nACGTACGTACGTACGTMACGTACGTACGTACGTACGTACGTACGTACGTRACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n";
+    let reference = Reference::parse_fasta(iupac_ref)?;
+    let _index = FMIndex::build(&reference);
+    Ok(())
+}
+
+#[test]
 fn test_cigar_query_length_valid() -> Result<(), BwaError> {
     // T49: Verify CIGAR query length matches actual read length
     // This tests the fix for CIGAR having wrong number of operations
