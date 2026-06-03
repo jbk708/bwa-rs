@@ -140,7 +140,7 @@ pub fn mem_chain_flt(mut chains: Vec<Chain>, min_seed_len: usize) -> Vec<Chain> 
         return chains;
     }
 
-    chains.sort_by(|a, b| b.weight.cmp(&a.weight));
+    chains.sort_by_key(|c| std::cmp::Reverse(c.weight));
 
     let mut kept: Vec<Chain> = Vec::with_capacity(chains.len());
     for cand in chains.into_iter() {
