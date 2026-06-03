@@ -671,7 +671,7 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   score feeding the formula.
 
 ### T-023: Repetitive-read seeding time/memory blow-up
-- **Status:** OPEN
+- **Status:** FIXED (branch `t023-rescue-window-cap`)
 - **Severity:** medium
 - **Affected field(s):** N/A — throughput/RSS, not SAM content.
 - **Symptom:** A single full `sub2k` (2000-pair) alignment against chr1 peaks at
@@ -693,6 +693,46 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   reseed/secondary-chain builds and per-read DP on repeat-heavy reads remain
   uncapped), so large-set measurement is still blocked. Batched/parallel alignment
   (**T-013**) and a per-read work cap remain to do.
+- **Investigation (T-023 fix):** The suspected seeding cause was *refuted* as the
+  residual blocker. With T-021's `max_occ` cap and T-013's batched alignment, a full
+  `sub2k` run reaches the **emit phase**: the master binary writes 913 of 4014 records
+  before being OOM-killed. Records are written only in the single-threaded step-2 emit
+  loop (`src/main.rs`), so primary alignment — seeding + extension — had already
+  completed for all 2000 pairs. The kill is in **mate rescue**: `rescue_mate` →
+  `local_align` allocates a dense `3 × (orphan_len+1) × (window+1)` i32 DP matrix, and
+  the window width is `dist.upper_bound() = mean + 4·std_dev`. `InsertSizeDistribution`
+  estimated mean/std with a **naive running accumulator over all FR-concordant inserts,
+  with no outlier filtering**, so a few concordant-by-orientation but mismapped pairs
+  (mates megabases apart) inflate `std_dev` to millions → `upper_bound` → tens of
+  millions → window approaches the whole chromosome (≥55 M bp) → a single rescue
+  allocates >100 GB → OOM. This is the T-003 dense-matrix bug class in the rescue path.
+  bwa-mem2 avoids it via robust `mem_pestat` estimation (its log on this data:
+  `# candidate unique pairs (FF,FR,RF,RR): (0,859,0,1)`; `boundaries for computing mean
+  and std.dev: (1, 689)`; `mean and std.dev: (342.42, 112.45)`).
+- **Resolution:** Ported bwa's `mem_pestat` robust insert-size estimation
+  (`InsertSizeDistribution::from_insert_sizes`, `src/paired.rs`), replacing the naive
+  streaming `add`: sort the FR inserts, take p25/p75 (bwa's `(q·n + .499)` index), and
+  **filter outliers to `[p25 − 2·IQR, p75 + 2·IQR]` before computing mean/std**;
+  proper-pair bounds are `[p25 − 3·IQR, p75 + 3·IQR]` widened to include `mean ± 4σ`
+  (`OUTLIER_BOUND = 2.0`, `MAPPING_BOUND = 3.0`, `MAX_STDDEV = 4.0`, verified against two
+  bwa-mem2 log blocks). `src/main.rs` collects the FR inserts into a vec (the pairs are
+  already buffered) and builds the distribution once before the emit loop. No hard cap is
+  added — the bounded rescue window falls out of correct estimation, exactly as in
+  bwa-mem2; the rescue geometry in `rescue_mate` is unchanged. `with_params` is retained
+  (test-only, documented) as a parameter-supplied constructor using the simpler
+  `mean ± 4σ` bound.
+- **Measured (chr1, `-k 19 -t 16`, 128 GB allocation; `bench/compare_t023_summary.md`):**
+  **`sub2k` master OOM-killed (913/4014 records, >128 GB) → T-023 exit 0
+  (4000/4000 records, peak RSS 15.21 GB, wall 42 s).** The **300-uniq verification set
+  is byte-identical to the T-022 baseline** (excl. `@PG CL:`) — zero regression, since
+  unique pairs carry no outliers so robust ≈ naive. sub2k distribution is robust, not
+  the degenerate fallback: median |TLEN| 325 (≈ bwa-mem2 mean 342.42), 2702 proper-pair
+  flags. All unit tests pass; `cargo clippy -- -D warnings` and `cargo fmt --check` clean.
+- **Residual (other tickets):** the `sub2k` per-field divergence vs bwa-mem2 (POS 40.7 %,
+  mapped 3594 vs 3987) is the pre-existing placement/seeding gap on a random multi-mapper
+  sample — primary POS/CIGAR are independent of the insert distribution. Closing it is
+  **T-024** (approximate secondary seeding) / **T-018** (banded SW); T-023 only unblocks
+  the measurement.
 
 ### T-024: Approximate (inexact) secondary seeding to surface bwa's second-best loci
 - **Status:** OPEN

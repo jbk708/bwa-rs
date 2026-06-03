@@ -4,6 +4,12 @@ use crate::types::{AlignmentResult, Orientation};
 
 /// Std-dev multiplier for the proper-pair insert-size window (bwa `mem_pestat` MAX_STDDEV).
 const MAX_STDDEV: f64 = 4.0;
+/// IQR multiplier used to reject outliers when computing mean/std_dev.
+const OUTLIER_BOUND: f64 = 2.0;
+/// IQR multiplier used to compute the proper-pair bounds before widening toward mean±MAX_STDDEV*σ.
+const MAPPING_BOUND: f64 = 3.0;
+/// Minimum number of concordant insert sizes required to produce a valid distribution.
+const MIN_DIR_CNT: usize = 10;
 
 /// bwa `-U` default unpaired-read penalty subtracted from the unpaired score when
 /// choosing between paired and unpaired placements.
@@ -31,9 +37,8 @@ pub struct MateFields {
 pub struct InsertSizeDistribution {
     pub mean: f64,
     pub std_dev: f64,
-    count: u64,
-    sum: f64,
-    sum_sq: f64,
+    low: u32,
+    high: u32,
 }
 
 impl InsertSizeDistribution {
@@ -41,33 +46,83 @@ impl InsertSizeDistribution {
         Self::default()
     }
 
+    /// Construct directly from a known mean/std_dev, deriving the proper-pair bounds
+    /// from `mean ± MAX_STDDEV * std_dev` alone. Unlike [`Self::from_insert_sizes`] this
+    /// has no percentile data, so it omits the IQR widening; it is intended for tests and
+    /// callers that supply distribution parameters rather than raw observations.
     pub fn with_params(mean: f64, std_dev: f64) -> Self {
+        let low = (mean - MAX_STDDEV * std_dev).max(0.0) as u32;
+        let high = (mean + MAX_STDDEV * std_dev) as u32;
         Self {
             mean,
             std_dev,
-            count: 0,
-            sum: 0.0,
-            sum_sq: 0.0,
+            low,
+            high,
         }
     }
 
-    pub fn add(&mut self, insert_size: u32) {
-        let size = insert_size as f64;
-        self.count += 1;
-        self.sum += size;
-        self.sum_sq += size * size;
+    /// Estimate the insert-size distribution from a slice of FR-concordant insert sizes
+    /// using bwa's `mem_pestat` robust algorithm: IQR-based outlier filtering for
+    /// mean/std_dev, then IQR-based proper-pair bounds widened toward mean±MAX_STDDEV*σ.
+    pub fn from_insert_sizes(sizes: &[u32]) -> Self {
+        if sizes.len() < MIN_DIR_CNT {
+            return Self::default();
+        }
 
-        if self.count == 1 {
-            self.mean = size;
-            self.std_dev = 0.0;
-        } else {
-            let n = self.count as f64;
-            let new_mean = self.mean + (size - self.mean) / n;
-            self.std_dev = ((n - 1.0) * self.std_dev * self.std_dev
-                + (size - self.mean) * (size - new_mean))
-                / n;
-            self.std_dev = self.std_dev.sqrt();
-            self.mean = new_mean;
+        let n = sizes.len();
+        let mut sorted = sizes.to_vec();
+        sorted.sort_unstable();
+
+        let percentile = |q: f64| sorted[((q * n as f64 + 0.499) as usize).min(n - 1)];
+        let p25 = percentile(0.25);
+        let p75 = percentile(0.75);
+        let iqr = p75 as f64 - p25 as f64;
+
+        let filter_low = ((p25 as f64 - OUTLIER_BOUND * iqr + 0.499) as i64).max(1);
+        let filter_high = (p75 as f64 + OUTLIER_BOUND * iqr + 0.499) as i64;
+
+        let inliers: Vec<f64> = sizes
+            .iter()
+            .filter(|&&x| {
+                let v = x as i64;
+                v >= filter_low && v <= filter_high
+            })
+            .map(|&x| x as f64)
+            .collect();
+
+        if inliers.is_empty() {
+            return Self::default();
+        }
+
+        let mean = inliers.iter().sum::<f64>() / inliers.len() as f64;
+        let variance = inliers
+            .iter()
+            .map(|&x| (x - mean) * (x - mean))
+            .sum::<f64>()
+            / inliers.len() as f64;
+        let std_dev = variance.sqrt();
+
+        let sigma_low = mean - MAX_STDDEV * std_dev;
+        let sigma_high = mean + MAX_STDDEV * std_dev;
+
+        let mut low = ((p25 as f64 - MAPPING_BOUND * iqr + 0.499) as i64).max(1);
+        let mut high = (p75 as f64 + MAPPING_BOUND * iqr + 0.499) as i64;
+
+        if (low as f64) > sigma_low {
+            low = (sigma_low + 0.499) as i64;
+        }
+        if (high as f64) < sigma_high {
+            high = (sigma_high + 0.499) as i64;
+        }
+
+        let low = low.max(1) as u32;
+        let high = high.max(1) as u32;
+
+        Self {
+            mean,
+            std_dev,
+            low,
+            high,
         }
     }
 
@@ -78,11 +133,11 @@ impl InsertSizeDistribution {
     }
 
     pub fn lower_bound(&self) -> u32 {
-        (self.mean - MAX_STDDEV * self.std_dev).max(0.0) as u32
+        self.low
     }
 
     pub fn upper_bound(&self) -> u32 {
-        (self.mean + MAX_STDDEV * self.std_dev) as u32
+        self.high
     }
 }
 
@@ -380,15 +435,46 @@ mod tests {
 
     #[test]
     fn test_insert_distribution() {
-        let mut dist = InsertSizeDistribution::new();
+        let sizes: Vec<u32> = vec![200, 198, 202, 199, 201, 200, 197, 203, 200, 201, 199, 202];
+        let dist = InsertSizeDistribution::from_insert_sizes(&sizes);
 
-        dist.add(200);
-        dist.add(210);
-        dist.add(190);
-        dist.add(205);
+        assert!(
+            (dist.mean - 200.0).abs() < 2.0,
+            "mean near 200, got {}",
+            dist.mean
+        );
+        assert!(dist.std_dev >= 0.0, "std_dev non-negative");
+        assert!(
+            dist.upper_bound() < 1000,
+            "upper_bound reasonable, got {}",
+            dist.upper_bound()
+        );
+    }
 
-        assert!((dist.mean - 201.25).abs() < 0.1);
-        assert!(dist.std_dev > 0.0);
+    #[test]
+    fn test_pestat_filters_outliers() {
+        let mut sizes: Vec<u32> = (0..100).map(|i| 335 + (i % 11)).collect();
+        sizes.extend_from_slice(&[50_000_000, 50_000_001, 49_999_999, 50_000_002, 50_000_003]);
+
+        let dist = InsertSizeDistribution::from_insert_sizes(&sizes);
+
+        assert!(
+            dist.std_dev < 10_000.0,
+            "outliers must be filtered: std_dev={}",
+            dist.std_dev
+        );
+        assert!(
+            dist.upper_bound() < 100_000,
+            "upper_bound must not be in millions: {}",
+            dist.upper_bound()
+        );
+    }
+
+    #[test]
+    fn test_pestat_too_few_pairs() {
+        let dist = InsertSizeDistribution::from_insert_sizes(&[300, 320, 310]);
+        assert_eq!(dist.mean, 0.0, "too few pairs → mean=0");
+        assert_eq!(dist.upper_bound(), 0, "too few pairs → upper_bound=0");
     }
 
     #[test]
