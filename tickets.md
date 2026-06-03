@@ -4,31 +4,32 @@ Tracking the investigation into why `bwa-rs` SAM output is not byte-identical to
 upstream **bwa-mem2** on the bwa-mem2 performance dataset (D2 / SRR7733443
 against `human_g1k_v37.fasta`).
 
-**Status:** In progress (2026-06-01). Two blockers and one OOM resolved
-(T-002, T-003, T-004 — see PR `fix-oom-and-64bit`); bwa-rs can now index the full
-human genome and map both strands. Soft-clipping (T-005), a minimum-score
-filter (T-017), QNAME trimming (T-006), and paired-end SAM fields (T-007) are now
-also resolved. Remaining output-divergence gaps are ticketed below, ordered
-roughly by impact toward byte-identical SAM.
+**Status:** Phase 1 complete (2026-06-03). All format/field/seeding tickets
+(T-001 … T-024) are **FIXED**: full human-genome index (64-bit SA), both strands,
+soft-clipping, min-score filter, QNAME trim, paired-end fields, multi-contig
+coordinates, SEQ/QUAL, `M`-form CIGAR, the optional-tag set (NM/MD/MC/AS/XS),
+index persistence, parallel alignment, the `mem_approx_mapq_se` MAPQ formula,
+robust `mem_pestat` insert-size estimation, mate rescue, and secondary detection.
 
-**Verification baseline:** chr1 (249 Mbp), 300 uniquely-mapping read pairs from
-SRR7733443, normalized QNAMEs, `-k 19`. POS field matches:
-- After T-004: **246/300**.
-- After T-005 (soft-clipping): **284/300**.
+**Where parity stands (chr1, vs the bwa-mem2 binary):**
+- **Uniquely-mapping reads (300-uniq) — effectively at parity.** Per-field vs
+  bwa-mem2: POS/RNAME/RNEXT/PNEXT **0%**; CIGAR/FLAG/TLEN **0.7%**;
+  MAPQ/SEQ/QUAL **≤0.3%** (a handful of mate-rescue / soft-clip-boundary records).
+- **Multi-mapper / repetitive sample (sub2k) — placement still diverges.** POS
+  **40.7%**, CIGAR **34.1%**, with FLAG/TLEN/MAPQ/RNAME cascading from it.
 
-POS is unchanged by T-007. T-007 instead closed the pairing-field divergence: on
-this set FLAG dropped 100% → 1.3% (8/600), RNEXT 100% → 0%, TLEN 98.7% → 1.3%.
+**The remaining frontier is one root cause: final alignment placement (POS/CIGAR)
+on repetitive, heavily-soft-clipped, multi-mapping reads.** Everything downstream
+(proper-pair FLAG, TLEN, mate RNAME/PNEXT, SEQ/QUAL orientation, MAPQ) falls into
+line once POS+CIGAR match — exactly as the uniq set demonstrates. Closing it is
+**Phase 2** (T-025 … T-027 below): faithful `mem_chain2aln` / `ksw_extend` region
+extension and max-score primary selection — the deepest part of bwa-mem.
 
-The residual **16/300** POS mismatches break down into three independent causes
-(none inside soft-clipping itself):
-- **~10** — rigid seed anchoring: bwa-mem2 runs banded Smith-Waterman that can
-  shift the alignment 1–10 bp relative to the seed (placing a read full-length
-  where bwa-rs pins the seed and soft-clips the overhang). See **T-018**.
-- **3** — low-scoring partial hits bwa-mem2 rejects. T-017 reports these unmapped
-  (matching bwa-mem2's mapped/unmapped status); T-007 now also emits their
-  unmapped-mate POS/FLAG convention (mapped mate's coordinate + paired bits).
-- **3** — reads bwa-mem2 maps via mate rescue that bwa-rs leaves unmapped. Split
-  out of T-007 to **T-019** (the 8/600 residual FLAG diffs are these rescue cases).
+**Verification baseline:** chr1 (249 Mbp), `-k 19 -t 16`. Two sets from SRR7733443
+with normalized QNAMEs: **300 uniquely-mapping pairs** (`uniq`, the zero-regression
+gate) and a **2000-pair multi-mapper sample** (`sub2k`, the Phase-2 target).
+Compared with `bench/compare.sh` against the bwa-mem2 binary outputs
+(`bench/bwamem2_uniq.sam`, `bench/bwamem2_2k.sam`).
 
 ---
 
@@ -101,7 +102,7 @@ These are hypotheses to confirm/refute once real diffs are observed:
   to the prior sanitization workaround (M/R → N).
 
 ### T-002: Cannot index references larger than ~2.147 Gbp (32-bit suffix array)
-- **Status:** OPEN — hard blocker, no input-level workaround.
+- **Status:** FIXED (PR `fix-oom-and-64bit`) — see Resolution.
 - **Severity:** blocker
 - **Affected field(s):** N/A — fails during index build; **the full human-genome
   byte-identity benchmark is impossible with current bwa-rs.**
@@ -169,9 +170,11 @@ These are hypotheses to confirm/refute once real diffs are observed:
 
 ---
 
-## Remaining gaps toward byte-identical SAM (OPEN)
+## Phase 1: format, fields, and seeding (ALL FIXED)
 
-Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
+Ordered roughly by impact. Verification set: chr1, 300 unique read pairs. Every
+ticket in this section (T-005 … T-024) is resolved; the residuals each names are
+placement-fidelity diffs now consolidated into Phase 2 (T-025 … T-027).
 
 ### T-005: No soft-clipping — end-to-end alignment shifts POS and CIGAR
 - **Status:** FIXED (PR stacked on `fix-oom-and-64bit`, branch `t005-soft-clipping`)
@@ -735,7 +738,7 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   the measurement.
 
 ### T-024: Approximate (inexact) secondary seeding to surface bwa's second-best loci
-- **Status:** OPEN
+- **Status:** FIXED (branch `t024-approx-secondary-seeding`)
 - **Severity:** medium
 - **Affected field(s):** MAPQ, XS (optional tag).
 - **Symptom:** Split from T-021. After T-021's re-seeding + `mem_mark_primary_se`-style
@@ -745,13 +748,116 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   seed across mismatches/indels (e.g. `SRR7733443.26`'s 72 bp core maps at a second
   locus as `96M55S` / `65M1I35M1D26M24S`, not an exact 72 bp MEM). bwa-rs's exact-MEM
   seeding never surfaces that locus, so `sub = 0` → MAPQ 60 and XS values diverge.
-- **Suspected cause:** T-021 surfaces secondaries only where the repeat is an *exact*
-  MEM at ≥2 loci. bwa's candidate set additionally includes chains whose seed is short
-  and shared but whose full alignment is inexact (found via `ksw`/banded extension at
-  each chain), producing a richer `sub`/XS set.
-- **Resolution:** Build alignment candidates from *all* chains (not just exact-repeat
-  reseeds) and let banded extension score each at its locus, so an inexact second-best
-  contributes to `sub`/XS; tighten the `mem_mark_primary_se` clustering to bwa's. This
-  unblocks the remaining T-015 MAPQ residual and XS *value* byte-matching (T-011).
-  Overlaps with **T-022** (faithful pairing score) and is gated on **T-023** for
-  large-set measurement.
+- **Suspected cause:** Two gaps in the T-021 `sub`/XS set. (1) **Tandem-repeat copies**
+  (e.g. the telomeric `CCCTAA` hexamer) collapse into one chain — `chain_seeds` merges
+  seeds within 50 bp and `filter_mems` drops ref-overlapping MEMs — so a read whose core
+  maps to N nearby copies yields one placement, `sub = 0`. (2) **Inexact secondary loci**
+  are never seeded: rounds 1 (SMEM) + 2 (midpoint reseed) miss a short shared exact core.
+- **Resolution:** Ported bwa's **third seeding round** (`bwt_seed_strategy1`,
+  `MAX_MEM_INTV = 20`) as `collect_short_seeds` (`src/mem_finder.rs`): scan the read
+  left-to-right, collect at each position the shortest exact seed (len ≥ min_seed) whose
+  SA interval ≤ 20, advance past it. It is kept **out** of the primary seeding path
+  (`find_supermaximal_mems`) so primary placement is unchanged. `align_read`
+  (`src/alignment.rs`) now derives `sub`/`sub_n` over the **unfiltered** MEMs (keeping
+  tandem copies) **plus** the third-round seeds: each candidate is extended via
+  `build_alignment`, duplicates of the primary dropped by bwa's containment rule
+  (contained in query AND reference, same strand), a candidate at a distinct reference
+  locus overlapping the primary in query space counted as a secondary. Candidates are
+  deduped by (query_start, ref_start) before the DP and by (position, strand) after, and
+  capped at `MAX_SUB_CANDIDATES = 64`. A guard excludes any candidate scoring *above*
+  the chosen primary (bwa's primary is the max-scoring region, so `sub ≤ score`; a
+  higher-scoring candidate is a primary-placement gap, **T-018**, not a secondary). XS
+  is emitted from the resulting `sub`.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t024{,_summary}.md`):** **zero
+  regression** — the 300-uniq set is byte-identical to the clean-master baseline on SAM
+  columns 1–10, and sub2k placement (cols 1–4,6) is frozen. MAPQ vs bwa-mem2 over the
+  sub2k both-mapped records: exact-match **62.3 % → 64.0 %**, mean |MAPQ−bwa| **18.40 →
+  16.25**, over-scoring reads (bwa-rs > bwa) **1329 → 1252**, big over-scorers (>+20)
+  **1238 → 1128**; identically-placed mean |MAPQ−bwa| 11.90 → 11.14. Throughput/RSS
+  unchanged (47 s, 15.2 GB). All unit tests pass; `cargo clippy -- -D warnings` and
+  `cargo fmt --check` clean.
+- **Residual (other root causes — follow-up):** under-scoring rises (26 → 41) — reads
+  where bwa-rs's *primary* is mis-placed (lower AS than bwa-mem2), now exposed by better
+  secondary detection. Byte-matching XS *values* and closing the remaining MAPQ gap need
+  max-alignment-score primary selection (**T-025**) and faithful banded (`ksw`)
+  region-extension scoring at each candidate locus (**T-026**); both change placement.
+  Overlaps **T-022** (faithful pairing score).
+
+---
+
+## Phase 2: placement fidelity (OPEN)
+
+The remaining sub2k divergence (POS 40.7 %, CIGAR 34.1 %, with FLAG/TLEN/MAPQ
+cascading) is one root cause — final alignment placement on repetitive,
+heavily-soft-clipped, multi-mapping reads — broken into the three pieces of bwa's
+`mem_align1_core` that bwa-rs still approximates. **T-025** is the smallest and
+unblocks the others; **T-026** is the deep core; **T-027** refines the candidate
+set. Verification: the `sub2k` set (Phase-2 target); the `uniq` set stays the
+zero-regression gate (it is already at parity, so any placement change there is a
+regression).
+
+### T-025: Select the primary by extended-alignment score, not chain score
+- **Status:** OPEN
+- **Severity:** high (largest remaining POS/CIGAR driver)
+- **Affected field(s):** POS, CIGAR, MAPQ, FLAG, TLEN (all cascade from primary placement).
+- **Symptom:** bwa-rs picks the primary from the highest-scoring *chain*
+  (`chains.max_by(|c| c.score)`, `src/alignment.rs`), where `chain.score` is a
+  seed-length/gap heuristic from `chain_seeds`. bwa picks the region with the highest
+  *extended* alignment score. The two are not comparable, so bwa-rs sometimes anchors a
+  lower-scoring placement: e.g. `SRR7733443.249` is emitted `101S50M` (AS 50) while a
+  candidate MEM DP-extends to AS 57 at another locus — the candidate *is* the alignment
+  bwa reports. T-024 had to add a `sub <= score` guard (skip candidates scoring above the
+  chosen primary) purely to stop this mis-selection from forcing MAPQ to 0.
+- **Suspected cause:** `align_read` chooses `best_chain` before extension and never
+  compares the *extended* scores of competing chains/candidates; `build_alignment` is run
+  once on the winner. `chain_seeds` → `finalize_chain` also collapses each chain to one
+  representative seed, discarding alternative anchors within a chain.
+- **Resolution (proposed):** Extend the top-N chains/candidates (the T-024 candidate set
+  already does this for `sub`), then select the primary as the highest *extended-score*
+  region, with bwa's tie-breaks (lower coordinate, then strand). Remove the T-024
+  `sub <= score` guard once the primary is guaranteed maximal. This will move POS/CIGAR on
+  the sub2k set, so it must be measured against `uniq` for zero regression and against
+  `sub2k` for net POS/CIGAR improvement.
+- **Dependencies:** Builds on the T-024 candidate machinery. Feeds **T-026**.
+
+### T-026: Faithful `mem_chain2aln` / `ksw_extend` region extension (end-bonus banded SW)
+- **Status:** OPEN
+- **Severity:** high (the deep core — remaining 1–10 bp POS shifts and soft-clip boundaries)
+- **Affected field(s):** POS, CIGAR, AS, NM, MD, MAPQ.
+- **Symptom:** Even where bwa-rs and bwa agree on the locus, the extended alignment
+  differs: bwa-rs scores lower and clips/shifts differently (e.g. `SRR7733443.623`
+  bwa-rs AS 90 / `104M1D2M2D42M` vs bwa AS 124; the T-018/T-014 residual 1–10 bp POS
+  shifts and `±` soft-clip-boundary CIGARs). bwa-rs's `affine_extend_forward` /
+  `build_alignment` anchor at the seed start corner and extend outward; bwa's
+  `ksw_extend` runs banded SW from each seed with a query-end *bonus* (`opt->w`,
+  `zdrop`, end-bonus) and reconciles left+right extensions, which picks different
+  boundaries and resolves scoring ties differently.
+- **Suspected cause:** `src/alignment.rs::affine_extend_forward` / `extend_seed_backward`
+  are a simplified banded affine DP without bwa's end-bonus, `zdrop`, or the
+  `mem_chain2aln` per-chain multi-region reconciliation; `Scoring` tie-breaks
+  (`gap_open`/`clip_penalty`) don't match `ksw` exactly on equal-score paths.
+- **Resolution (proposed):** Port `ksw_extend` (banded SW with end-bonus + `zdrop`) and
+  `mem_chain2aln` (extend each chain into one-or-more `mem_alnreg_t` regions), replacing
+  the single-seed `build_alignment`. Reuse the T-024 candidate set as the region inputs.
+  This is the largest single change and subsumes the T-018 (banded SW) and T-014 (scoring
+  tie-break) residuals. Measure POS/CIGAR/AS on `sub2k`; guard `uniq` for zero regression.
+- **Dependencies:** **T-025** (max-score primary selection over the extended regions).
+
+### T-027: Chain filtering (`mem_chain_flt`) to prune weak/contained chains
+- **Status:** OPEN
+- **Severity:** medium
+- **Affected field(s):** MAPQ, XS (and indirectly POS via the candidate set).
+- **Symptom:** bwa-rs has no `mem_chain_flt`, so weak chains that bwa drops survive into
+  the candidate set. This surfaced in T-024 as XS over-counting on unique reads
+  (`SRR7733443.100004` bwa-rs XS 15 where bwa emits XS 0) — bwa discards the short,
+  largely-contained chain before scoring it.
+- **Suspected cause:** `chain_seeds` (`src/chaining.rs`) emits every greedy chain;
+  there is no drop by chain weight / containment (bwa's `chain_drop_ratio = 0.50`,
+  `min_chain_weight`, overlap-vs-better-chain test).
+- **Resolution (proposed):** Port `mem_chain_flt`: sort chains by weight, drop a chain
+  that is largely contained in a higher-weight chain or whose weight is below
+  `drop_ratio × best`. Apply before region extension so both the primary candidate set and
+  the `sub`/XS set match bwa's. Measure XS-value agreement on `uniq`/`sub2k`; guard `uniq`
+  core fields for zero regression.
+- **Dependencies:** Composes with **T-025**/**T-026**; can land independently as a
+  candidate-set refinement.

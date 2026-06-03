@@ -272,6 +272,19 @@ pub struct ChainedSeed {
     pub backward_score: f32,
 }
 
+impl ChainedSeed {
+    /// A bare single-seed anchor with zeroed chain scores. Used to extend an
+    /// individual MEM via `build_alignment`, which reads only `mem`.
+    pub fn from_mem(mem: MEM) -> Self {
+        Self {
+            mem,
+            score: 0.0,
+            forward_score: 0.0,
+            backward_score: 0.0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AlignmentResult {
     pub position: usize,

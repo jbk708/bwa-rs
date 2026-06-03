@@ -1,11 +1,9 @@
 //! Smith-Waterman alignment with affine gap penalties.
 
-use std::cmp::Ordering;
-
 use crate::chaining::chain_seeds;
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
-use crate::mem_finder::DEFAULT_MAX_OCC;
+use crate::mem_finder::{collect_short_seeds, DEFAULT_MAX_OCC, MAX_MEM_INTV};
 use crate::paired::InsertSizeDistribution;
 use crate::reference::reverse_complement;
 use crate::seed::{filter_mems, find_mems_with_frac_rep, DEFAULT_MIN_SEED_LEN};
@@ -13,9 +11,10 @@ use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp};
 
 pub const DEFAULT_MIN_SCORE: i32 = 30;
 
-// Cap on the number of secondary chains aligned to derive the suboptimal score
-// for MAPQ; keeps the cost linear on repetitive reads.
-const MAX_SUB_CHAINS: usize = 32;
+// Cap on the number of candidate MEMs extended to derive the suboptimal score
+// for MAPQ; keeps the cost bounded on repetitive reads. The longest MEMs are
+// kept, as they anchor the most reliable placements.
+const MAX_SUB_CANDIDATES: usize = 64;
 
 // Fraction of the shorter alignment's query span that must overlap with the
 // primary for a candidate to be treated as a secondary (masked) hit.
@@ -87,13 +86,17 @@ impl Aligner {
         query: &[u8],
         _mate: Option<&[u8]>,
     ) -> Result<AlignmentResult, BwaError> {
-        let (mut mems, frac_rep) =
+        let (raw_mems, frac_rep) =
             find_mems_with_frac_rep(&self.index, query, self.min_seed_len, DEFAULT_MAX_OCC);
 
-        if mems.is_empty() {
+        if raw_mems.is_empty() {
             return Ok(self.unmapped_result());
         }
 
+        // The primary alignment is chosen from the filtered/chained SMEMs exactly
+        // as before — its placement is independent of the suboptimal-score work
+        // below, so POS/CIGAR/FLAG are unchanged.
+        let mut mems = raw_mems.clone();
         filter_mems(&mut mems);
 
         if mems.is_empty() {
@@ -119,69 +122,101 @@ impl Aligner {
             return Ok(self.unmapped_result());
         }
 
-        // Suboptimal alignment score for MAPQ: the best-scoring secondary chain
-        // whose placement does not overlap the primary, taken over the top
-        // MAX_SUB_CHAINS chains by score.
-        let mut alt_chains: Vec<&ChainedSeed> = chains
-            .iter()
-            .filter(|c| !std::ptr::eq(*c, best_chain))
-            .collect();
-        if alt_chains.len() > MAX_SUB_CHAINS {
-            alt_chains.select_nth_unstable_by(MAX_SUB_CHAINS - 1, |a, b| {
-                b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal)
-            });
-            alt_chains.truncate(MAX_SUB_CHAINS);
-        }
-
+        // Suboptimal alignment score for MAPQ (bwa's `sub`/`sub_n`). bwa scores
+        // every candidate region, not just the primary chain. Two effects are
+        // captured here that the primary chain misses:
+        //   1. Tandem-repeat copies collapse into a single chain (chain_seeds
+        //      merges seeds within 50 bp and filter_mems drops ref-overlapping
+        //      MEMs), so the *unfiltered* MEMs are used as candidates to keep the
+        //      distinct repeat copies.
+        //   2. Inexact secondary loci, where only a short sub-region matches
+        //      exactly, are surfaced by bwa's third seeding round
+        //      (`collect_short_seeds`, `max_mem_intv`).
+        // Each candidate is extended into a placement and compared against the
+        // primary; the longest candidates anchor the most reliable placements, so
+        // the set is capped to MAX_SUB_CANDIDATES to bound cost on repetitive reads.
         let pspan = query_span(&result.cigar);
         let primary_len = pspan.1.saturating_sub(pspan.0);
         let primary_pos = result.position;
         let primary_ref_end = primary_pos + result.cigar.reference_length();
         let primary_reverse = result.reverse_strand;
 
-        let mut sub = 0i32;
-        let mut sub_n = 0u32;
-        for alt in alt_chains {
-            let Ok(alt_res) = self.build_alignment(query, alt) else {
+        let mut cand_mems = raw_mems;
+        cand_mems.extend(collect_short_seeds(
+            &self.index,
+            query,
+            self.min_seed_len,
+            MAX_MEM_INTV,
+        ));
+        // `build_alignment` anchors on (query_start, ref_start) only, so seeds
+        // sharing that corner extend to the same placement; collapse them before
+        // the expensive DP. Keeping the longest among equal corners is arbitrary
+        // (the extension ignores length) but deterministic.
+        cand_mems
+            .sort_unstable_by_key(|m| (m.query_start, m.ref_start, std::cmp::Reverse(m.length)));
+        cand_mems.dedup_by_key(|m| (m.query_start, m.ref_start));
+        if cand_mems.len() > MAX_SUB_CANDIDATES {
+            cand_mems.select_nth_unstable_by_key(MAX_SUB_CANDIDATES - 1, |m| {
+                std::cmp::Reverse(m.length)
+            });
+            cand_mems.truncate(MAX_SUB_CANDIDATES);
+        }
+
+        // Best score per distinct secondary placement, keyed by (position,
+        // strand). Tandem copies a few bp apart are genuinely distinct placements
+        // and kept separate; different seeds extending to the same alignment are
+        // counted once.
+        let mut secondaries: Vec<(usize, bool, i32)> = Vec::new();
+        for m in &cand_mems {
+            let chained = ChainedSeed::from_mem(*m);
+            let Ok(alt_res) = self.build_alignment(query, &chained) else {
                 continue;
             };
 
-            // A candidate only contributes a suboptimal score when it is a
-            // genuinely distinct placement; a chain that reproduces the primary
-            // locus (e.g. a re-seed of the same region) is the same alignment.
-            let alt_ref_end = alt_res.position + alt_res.cigar.reference_length();
-            let same_locus = alt_res.reverse_strand == primary_reverse
-                && alt_res.position < primary_ref_end
-                && primary_pos < alt_ref_end;
-            if same_locus {
+            // bwa's primary is the highest-scoring region, so a true secondary
+            // never outscores it. The primary here is chosen by chain score, not
+            // extended-alignment score, so a candidate can DP-extend above it;
+            // that indicates a primary-placement gap (T-018), not a suboptimal
+            // hit, and counting it would force MAPQ to 0 spuriously — exclude it.
+            if alt_res.score > result.score {
                 continue;
             }
 
+            // A placement contained in the primary in BOTH query and reference
+            // (same strand) is the primary alignment re-derived from one of its
+            // own seeds — bwa's mem_sort_dedup_patch containment rule — so it is
+            // not a secondary. A placement that overlaps the primary in query
+            // space but sits at a different reference locus is a real secondary.
+            let alt_ref_end = alt_res.position + alt_res.cigar.reference_length();
             let cspan = query_span(&alt_res.cigar);
+            let query_contained = cspan.0 >= pspan.0 && cspan.1 <= pspan.1;
+            let ref_contained = alt_res.position >= primary_pos && alt_ref_end <= primary_ref_end;
+            if alt_res.reverse_strand == primary_reverse && query_contained && ref_contained {
+                continue;
+            }
+
             let cand_len = cspan.1.saturating_sub(cspan.0);
-
-            // Query-space overlap between candidate and primary spans.
-            let overlap_start = pspan.0.max(cspan.0);
-            let overlap_end = pspan.1.min(cspan.1);
-            let overlap = overlap_end.saturating_sub(overlap_start);
-
-            // Treat as secondary (masked) when query overlap exceeds MASK_LEVEL of
-            // the shorter aligned span — mirrors bwa's mem_mark_primary_se logic.
+            let overlap = pspan.1.min(cspan.1).saturating_sub(pspan.0.max(cspan.0));
             let min_len = primary_len.min(cand_len);
             let is_secondary = min_len > 0 && overlap as f32 > MASK_LEVEL * min_len as f32;
             if !is_secondary {
                 continue;
             }
 
-            match alt_res.score.cmp(&sub) {
-                Ordering::Greater => {
-                    sub = alt_res.score;
-                    sub_n = 1;
-                }
-                Ordering::Equal if sub > 0 => sub_n += 1,
-                _ => {}
+            if !secondaries
+                .iter()
+                .any(|&(p, rev, _)| rev == alt_res.reverse_strand && p == alt_res.position)
+            {
+                secondaries.push((alt_res.position, alt_res.reverse_strand, alt_res.score));
             }
         }
+
+        let sub = secondaries.iter().map(|&(_, _, s)| s).max().unwrap_or(0);
+        let sub_n = if sub > 0 {
+            secondaries.iter().filter(|&&(_, _, s)| s == sub).count() as u32
+        } else {
+            0
+        };
 
         result.mapq = approx_mapq_se(
             result.score,
