@@ -29,9 +29,9 @@ struct IndexArgs {
     #[arg(short = 'r')]
     pub reference: PathBuf,
 
-    /// Output index prefix
-    #[arg(short = 'p', default_value = "index")]
-    pub prefix: PathBuf,
+    /// Output index prefix (default: reference path)
+    #[arg(short = 'p')]
+    pub prefix: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -39,6 +39,10 @@ struct MemArgs {
     /// Reference genome (indexed)
     #[arg(short = 'R')]
     pub reference: PathBuf,
+
+    /// Index prefix (default: reference path)
+    #[arg(short = 'p')]
+    pub prefix: Option<PathBuf>,
 
     /// FASTQ file for read 1
     #[arg(short = '1')]
@@ -65,16 +69,28 @@ struct MemArgs {
     pub min_score: i32,
 }
 
+/// Returns `prefix` with `.bwarsidx` appended to its filename component.
+fn index_path_for(prefix: &std::path::Path) -> std::path::PathBuf {
+    let mut name = prefix
+        .file_name()
+        .map(std::ffi::OsString::from)
+        .unwrap_or_default();
+    name.push(".bwarsidx");
+    prefix.with_file_name(name)
+}
+
 fn main() -> Result<(), BwaError> {
     let cli = Cli::parse();
 
     match cli {
         Cli::Index(args) => {
             let reference = Reference::from_fasta(&args.reference)?;
-            // 2N index (forward + reverse-complement), matching bwa / bwa-mem2.
-            let _index = FMIndex::build_2n(&reference);
+            let prefix = args.prefix.unwrap_or_else(|| args.reference.clone());
+            let index = FMIndex::build_2n(&reference);
+            let path = index_path_for(&prefix);
+            index.save(&path)?;
             println!("Indexed {} bases", reference.total_len());
-            println!("Index prefix: {:?}", args.prefix);
+            println!("Wrote index to {:?}", path);
             Ok(())
         }
         Cli::Mem(args) => run_mem(args),
@@ -112,11 +128,31 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
     }
 
     let reference = Reference::from_fasta(&args.reference)?;
-    // Build the 2N index and extend against the 2N sequence so the aligner can
-    // place reads on both strands (positions in the reverse-complement half are
-    // mapped back to forward coordinates with the 0x10 flag set).
+    let prefix = args
+        .prefix
+        .clone()
+        .unwrap_or_else(|| args.reference.clone());
+    let index_path = index_path_for(&prefix);
+    let index = if index_path.exists() {
+        let index = FMIndex::load(&index_path)?;
+        if index.n_fwd != reference.total_len() {
+            return Err(BwaError::Index(format!(
+                "index {:?} does not match reference (n_fwd {} != reference length {})",
+                index_path,
+                index.n_fwd,
+                reference.total_len()
+            )));
+        }
+        eprintln!("Loaded index from {:?}", index_path);
+        index
+    } else {
+        eprintln!(
+            "Index not found at {:?}; building in memory (run `bwa-mem index` to persist)",
+            index_path
+        );
+        FMIndex::build_2n(&reference)
+    };
     let ref_data = reference.as_slice_2n();
-    let index = FMIndex::build_2n(&reference);
 
     let aligner = ParallelAligner::new(index, ref_data.to_vec())
         .min_seed_len(args.min_seed_len as usize)
@@ -394,6 +430,24 @@ mod tests {
     use super::*;
     use bwa_mem::types::{Cigar, CigarOp};
     use bwa_mem::Reference;
+
+    #[test]
+    fn index_path_for_appends_extension_to_path_with_existing_extension() {
+        let p = std::path::Path::new("test-data/chr1_bm2.fasta");
+        assert_eq!(
+            index_path_for(p),
+            std::path::PathBuf::from("test-data/chr1_bm2.fasta.bwarsidx")
+        );
+    }
+
+    #[test]
+    fn index_path_for_appends_extension_to_path_without_extension() {
+        let p = std::path::Path::new("some/dir/myref");
+        assert_eq!(
+            index_path_for(p),
+            std::path::PathBuf::from("some/dir/myref.bwarsidx")
+        );
+    }
 
     fn call_write_sam_record(
         reference: &Reference,

@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use crate::compact::CompactOccTable;
@@ -224,7 +224,7 @@ impl FMIndex {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), BwaError> {
-        let mut file = File::create(path)?;
+        let mut file = BufWriter::new(File::create(path)?);
 
         file.write_all(MAGIC)?;
         file.write_all(&[VERSION])?;
@@ -238,12 +238,13 @@ impl FMIndex {
         self.bwt.write_to(&mut file)?;
         self.sa.write_to(&mut file)?;
         self.occ.write_to(&mut file)?;
+        file.flush()?;
 
         Ok(())
     }
 
     pub fn load(path: &Path) -> Result<Self, BwaError> {
-        let mut file = File::open(path)?;
+        let mut file = BufReader::new(File::open(path)?);
 
         let mut magic = [0u8; 6];
         file.read_exact(&mut magic)?;

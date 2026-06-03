@@ -2,7 +2,18 @@
 
 //! Memory-mapped FM-Index for zero-copy index access.
 //!
-//! Enables processing of 3GB+ genomes without loading entire index into RAM.
+//! # On-disk index formats
+//!
+//! This crate provides two distinct on-disk index formats:
+//!
+//! - **64-bit serialized `FMIndex`** (file suffix `.bwarsidx`): written and read by
+//!   [`FMIndex::save`][crate::FMIndex::save] / [`FMIndex::load`][crate::FMIndex::load].
+//!   Used by the CLI (`bwa-mem index` / `bwa-mem mem`). Supports references larger than
+//!   4.29 Gbp (positions stored as `u64`).
+//!
+//! - **Memory-mapped `MmapFMIndex`** (this module, 32-bit offsets): an experimental
+//!   zero-copy format that maps the index file directly into the process address space.
+//!   Limited to references ≤4.29 Gbp. Not currently used by the CLI.
 
 use memmap2::Mmap;
 use std::fs::File;
