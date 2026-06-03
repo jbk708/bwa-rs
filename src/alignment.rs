@@ -1,13 +1,13 @@
 //! Smith-Waterman alignment with affine gap penalties.
 
-use crate::chaining::chain_seeds;
+use crate::chaining::{build_candidate_chains, chain_seeds, mem_chain_flt};
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
 use crate::mem_finder::{collect_short_seeds, DEFAULT_MAX_OCC, MAX_MEM_INTV};
 use crate::paired::InsertSizeDistribution;
 use crate::reference::reverse_complement;
 use crate::seed::{filter_mems, find_mems_with_frac_rep, DEFAULT_MIN_SEED_LEN};
-use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp};
+use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
 
 pub const DEFAULT_MIN_SCORE: i32 = 30;
 
@@ -135,6 +135,16 @@ impl Aligner {
             self.min_seed_len,
             MAX_MEM_INTV,
         ));
+
+        // bwa `mem_chain_flt`: group the candidate seeds into chains and drop the
+        // weak, query-contained chains that a higher-weight chain dominates, before
+        // any of them are extended into regions. This prunes the spurious secondaries
+        // that inflate `sub`/XS and over-score MAPQ. The baseline placement is added
+        // separately below and the primary is the max-extended-score region, so
+        // pruning here only narrows the secondary set — it never moves the primary.
+        let candidate_chains = mem_chain_flt(build_candidate_chains(cand_mems), self.min_seed_len);
+        let mut cand_mems: Vec<MEM> = candidate_chains.into_iter().flat_map(|c| c.seeds).collect();
+
         // `build_alignment` anchors on (query_start, ref_start) only, so seeds sharing
         // that corner extend to the same placement; collapse them before the expensive
         // DP. Keeping the longest among equal corners is arbitrary (the extension

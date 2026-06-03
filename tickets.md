@@ -785,7 +785,7 @@ placement-fidelity diffs now consolidated into Phase 2 (T-025 … T-027).
 
 ---
 
-## Phase 2: placement fidelity (T-025, T-026 FIXED; T-027 OPEN)
+## Phase 2: placement fidelity (T-025, T-026, T-027 FIXED)
 
 The remaining sub2k divergence (POS 40.7 %, CIGAR 34.1 %, with FLAG/TLEN/MAPQ
 cascading) is one root cause — final alignment placement on repetitive,
@@ -899,7 +899,7 @@ parity, so any placement change there is a regression).
 - **Dependencies:** **T-025** (max-score primary selection over the extended regions).
 
 ### T-027: Chain filtering (`mem_chain_flt`) to prune weak/contained chains
-- **Status:** OPEN
+- **Status:** FIXED (branch `t027-chain-filtering`)
 - **Severity:** medium
 - **Affected field(s):** MAPQ, XS (and indirectly POS via the candidate set).
 - **Symptom:** bwa-rs has no `mem_chain_flt`, so weak chains that bwa drops survive into
@@ -909,10 +909,35 @@ parity, so any placement change there is a regression).
 - **Suspected cause:** `chain_seeds` (`src/chaining.rs`) emits every greedy chain;
   there is no drop by chain weight / containment (bwa's `chain_drop_ratio = 0.50`,
   `min_chain_weight`, overlap-vs-better-chain test).
-- **Resolution (proposed):** Port `mem_chain_flt`: sort chains by weight, drop a chain
-  that is largely contained in a higher-weight chain or whose weight is below
-  `drop_ratio × best`. Apply before region extension so both the primary candidate set and
-  the `sub`/XS set match bwa's. Measure XS-value agreement on `uniq`/`sub2k`; guard `uniq`
-  core fields for zero regression.
-- **Dependencies:** Composes with **T-025**/**T-026**; can land independently as a
+- **Resolution (implemented):** Ported bwa's chain-weight and chain-filter as pure
+  functions in `src/chaining.rs`: `mem_chain_weight` (min of query-span and ref-span
+  seed-union coverage, capped at `(1<<30)-1`); `build_candidate_chains` (groups
+  collinear seeds into `Chain`s via bwa's `test_and_merge` diagonal-band test,
+  `CHAIN_BAND_WIDTH = 100`, `MAX_CHAIN_GAP = 10000` — cross-strand/cross-locus seeds
+  fall out because their reference offset breaks the band, contained seeds are
+  absorbed); and `mem_chain_flt` (sort chains by weight desc, greedily keep, drop a
+  chain that overlaps a kept higher-weight chain in query space by `>= CHAIN_MASK_LEVEL
+  = 0.50` and is much weaker — `w < best_w * CHAIN_DROP_RATIO (0.50)` **and**
+  `best_w - w >= 2 * min_seed_len`). `align_read` (`src/alignment.rs`) now runs
+  `mem_chain_flt(build_candidate_chains(cand_mems))` on the unfiltered MEM +
+  third-round (`collect_short_seeds`) candidate set and extends only the survivors.
+  Because the baseline (chained-SMEM) placement is still pushed separately and the
+  primary is the max-extended-score region, pruning narrows only the secondary
+  (`sub`/XS) set — it never moves the primary placement, so uniq stays frozen.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t027{,_summary}.md`):** **zero uniq
+  regression** — SAM cols 1–10 byte-identical to the T-026 baseline (POS 0, CIGAR 2,
+  TLEN 0, FLAG 4, MAPQ 2, SEQ/QUAL 2; 0 records differ on cols 1–10). The XS
+  over-counting this ticket targets is closed: uniq records with non-zero `XS:i` drop
+  **94 → 13**, and the documented read `SRR7733443.100004` moves `XS:i:19 → XS:i:0`
+  (bwa-mem2 emits 0). sub2k placement is net-neutral-to-better (POS 1243 → 1234,
+  PNEXT 1243 → 1234, TLEN 1768 → 1754, SEQ/QUAL 579 → 578; CIGAR 1036 → 1040, FLAG
+  flat); identically-placed reads 2578 → 2582; MAPQ exact-match flat (69.5% → 69.3%),
+  bwa-rs-lower 67 → 60. 347 tests pass (7 new chaining tests); `cargo clippy
+  -- -D warnings` and `cargo fmt --check` clean.
+- **Residual (other root cause — follow-up):** the bulk of the sub2k MAPQ over-scoring
+  is the *inverse* of this ticket — bwa finds an *inexact* secondary locus (DP-extends a
+  short shared seed across mismatches/indels) that bwa-rs's seeding never surfaces, so
+  `sub = 0` → MAPQ 60. `mem_chain_flt` only removes candidates, so closing it needs
+  richer approximate-secondary seeding (the **T-024** class), not chain filtering.
+- **Dependencies:** Composes with **T-025**/**T-026**; landed independently as a
   candidate-set refinement.
