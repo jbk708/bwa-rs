@@ -797,7 +797,7 @@ zero-regression gate (it is already at parity, so any placement change there is 
 regression).
 
 ### T-025: Select the primary by extended-alignment score, not chain score
-- **Status:** OPEN
+- **Status:** FIXED (branch `t025-max-score-primary`)
 - **Severity:** high (largest remaining POS/CIGAR driver)
 - **Affected field(s):** POS, CIGAR, MAPQ, FLAG, TLEN (all cascade from primary placement).
 - **Symptom:** bwa-rs picks the primary from the highest-scoring *chain*
@@ -818,6 +818,30 @@ regression).
   `sub <= score` guard once the primary is guaranteed maximal. This will move POS/CIGAR on
   the sub2k set, so it must be measured against `uniq` for zero regression and against
   `sub2k` for net POS/CIGAR improvement.
+- **Resolution (implemented):** `align_read` (`src/alignment.rs`) now keeps the chained
+  SMEM as a `baseline` and extends the existing T-024 candidate set (unfiltered MEMs +
+  `collect_short_seeds`, deduped by `(query_start, ref_start)`, capped at
+  `MAX_SUB_CANDIDATES = 64`) into `placements`. The primary is the highest *extended*-score
+  placement; the baseline wins exact score ties so uniquely-mapping reads only move when a
+  candidate scores **strictly** higher (no coordinate/strand tie-break needed). The
+  `if alt_res.score > result.score { continue; }` guard is removed — the primary is now
+  maximal, so a distinct-locus candidate overlapping the primary in query space is a
+  genuine secondary. `build_alignment` reads only `chain.mem`, so baseline and candidates
+  extend on equal footing. New test `test_primary_selected_by_max_extended_score`.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t025{,_summary}.md`):** **uniq placement
+  improved with no regression** — POS 0, CIGAR 4 → **2**, TLEN 4 → **0**; the two changed
+  reads (`100142`, `100189`) move *to* bwa-mem2's exact CIGAR/TLEN (`138M13S`/`146M5S`,
+  the higher-scoring region is bwa's). **sub2k net placement improvement:** POS 40.7% →
+  **38.0%** (−108), CIGAR 34.1% → **30.0%** (−167), RNAME/RNEXT 8.8% → **2.0%** (−272),
+  FLAG/TLEN/SEQ/QUAL all down; identically-placed reads 2283 → **2405** (+122). MAPQ ticks
+  up (sub2k 38.9% → 39.9%; uniq 2 → 4; identically-placed exact 76.7% → 73.3%) — the
+  newly-correctly-placed reads are heavily-soft-clipped repeats bwa grades down via deeper
+  region scoring / chain filtering; bwa-rs over-scores them (`bwa-rs lower` 5 → 20).
+  Throughput/RSS unchanged (sub2k 37 s, 15.39 GB). All tests pass; clippy/fmt clean.
+- **Residual (other root causes):** byte-matching the remaining POS/CIGAR and the MAPQ/XS
+  *values* needs faithful `ksw_extend`/`mem_chain2aln` region extension (**T-026**) and
+  `mem_chain_flt` chain pruning (**T-027**). T-025 makes the primary maximal over the
+  current candidate set; T-026 makes each candidate's extended score/boundaries faithful.
 - **Dependencies:** Builds on the T-024 candidate machinery. Feeds **T-026**.
 
 ### T-026: Faithful `mem_chain2aln` / `ksw_extend` region extension (end-bonus banded SW)
