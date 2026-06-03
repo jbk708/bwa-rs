@@ -69,7 +69,7 @@ These are hypotheses to confirm/refute once real diffs are observed:
 ## Tickets
 
 ### T-001: Index build aborts on IUPAC ambiguity codes in reference FASTA
-- **Status:** OPEN (worked around for the benchmark via reference sanitization)
+- **Status:** FIXED (branch `t001-iupac-encode`)
 - **Severity:** blocker
 - **Affected field(s):** N/A — fails before any SAM is produced (index build).
 - **Symptom:** `bwa-mem index -r test-data/human_g1k_v37.fasta` exits with
@@ -94,6 +94,11 @@ These are hypotheses to confirm/refute once real diffs are observed:
   `test-data/human_g1k_v37.clean.fasta`, fed to **both** aligners so the
   comparison stays fair (bwa-mem2 maps these to N internally regardless). Released
   binary left unpatched.
+- **Resolution (implemented):** `reference::encode_base` now maps any base outside
+  `A/C/G/T/N` to `N` (`0b100`) instead of returning `Err`, matching
+  `utils::encode_sequence`. The unsanitized `human_g1k_v37.fasta` (and any
+  IUPAC-containing FASTA) now indexes without error; the encoding is byte-identical
+  to the prior sanitization workaround (M/R → N).
 
 ### T-002: Cannot index references larger than ~2.147 Gbp (32-bit suffix array)
 - **Status:** OPEN — hard blocker, no input-level workaround.
