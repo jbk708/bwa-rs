@@ -316,15 +316,42 @@ Ordered roughly by impact. Verification set: chr1, 300 unique read pairs.
   fixed in follow-up **T-020** (MD differing 186 → 2).
 
 ### T-012: `index` subcommand is a no-op; `mem` rebuilds the index every run
-- **Status:** OPEN
+- **Status:** FIXED (branch `t012-index-persist`)
 - **Severity:** medium (usability/perf, not a SAM-content diff)
-- **Symptom:** `bwa-mem index -p PREFIX` builds the FM-index, prints
-  `Indexed N bases`, and writes **no files**; `mem` rebuilds the whole index in
+- **Symptom:** `bwa-mem index -p PREFIX` built the FM-index, printed
+  `Indexed N bases`, and wrote **no files**; `mem` rebuilt the whole 2N index in
   memory on every invocation (`src/main.rs`). `FMIndex::save/load` exist and are
-  now 64-bit, but the CLI doesn't call them.
-- **Resolution:** Persist the index in `index` (call `save`) and load it in `mem`
-  (`load`) instead of rebuilding. Note `mmap_index` is still a separate 32-bit
-  format (≤4.29 Gbp); unify or document.
+  64-bit, but the CLI didn't call them.
+- **Resolution:** `index` now persists the 2N index via `FMIndex::save` to
+  `<prefix>.bwarsidx` (single file; `-p` prefix defaults to the reference path,
+  matching bwa-mem2's reference-keyed index convention). `mem` gained a matching
+  optional `-p` and now **loads** the index instead of rebuilding: if
+  `<prefix>.bwarsidx` exists it calls `FMIndex::load` and verifies
+  `index.n_fwd == reference.total_len()` (a present-but-mismatched/stale index
+  errors rather than silently rebuilding); a corrupt index propagates the load
+  error; an **absent** index falls back to the in-memory `build_2n` with a stderr
+  note (non-breaking). `mem` still reads the FASTA for the `Reference` (header
+  `@SQ`, `locate`, and the `as_slice_2n` ref data) — only the expensive suffix-array
+  build is skipped. A pure `index_path_for(prefix)` helper (unit-tested) derives the
+  `.bwarsidx` path. Per the ticket's "unify or document": `src/mmap_index.rs` now
+  documents the two on-disk formats (64-bit `.bwarsidx` used by the CLI vs the
+  experimental 32-bit zero-copy mmap format, ≤4.29 Gbp, unused by the CLI) — left
+  separate, not unified.
+- **Save/load performance fix:** `FMIndex::save`/`load` wrote/read the suffix array
+  through an **unbuffered** `File` (`SuffixArray::write_to`/`read_from` do one 8-byte
+  syscall per entry — ~498 M syscalls for chr1's 2N SA), making a load *slower* than
+  an in-memory rebuild. Wrapped both in `BufWriter`/`BufReader` (`src/fm_index.rs`).
+  On chr1 (249 Mbp / 498 Mbp 2N, 4.49 GB index): index build+save **856 s → 132 s**,
+  `mem` load **409 s → 44 s** (vs the prior ~106 s in-memory rebuild per run — load
+  now wins and amortizes across runs).
+- **Measured (chr1 / 300-uniq vs bwa-mem2, `bench/compare_t012.md`):** the load-path
+  SAM is **byte-identical** to the T-013 in-memory-build baseline
+  (`bench/bwars_2n_uniq_t013.sam`) except the `@PG CL:` output-filename field, and the
+  per-field divergence vs bwa-mem2 is unchanged — POS 0, RNAME 0, RNEXT 0, PNEXT 0;
+  FLAG 4, CIGAR 4, TLEN 4, MAPQ 2, SEQ 2, QUAL 2. **Zero regressions.** CLI smoke tests
+  confirm all four paths (save, load, stale `n_fwd` guard → error, missing-index
+  fallback build) and load==build byte-identity on a tiny reference. All unit tests
+  pass; `cargo clippy -- -D warnings` and `cargo fmt --check` clean.
 
 ### T-013: CLI alignment is single-threaded
 - **Status:** FIXED (branch `t013-parallel-align`)
