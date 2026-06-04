@@ -46,7 +46,7 @@ pub fn mem_chain_weight(seeds: &[MEM]) -> i32 {
         w
     }
 
-    let mut order: Vec<&MEM> = seeds.iter().collect();
+    let mut order: Vec<_> = seeds.iter().collect();
 
     order.sort_by_key(|s| s.query_start);
     let w_q = axis_cover(
@@ -96,15 +96,15 @@ pub fn build_candidate_chains(mut sorted: Vec<MEM>) -> Vec<Chain> {
         let mut merged = false;
         for chain in open.iter_mut() {
             let first = chain[0];
-            let last = chain[chain.len() - 1];
-            let qend = last.query_end() as i64;
-            let rend = last.ref_end() as i64;
+            let last = *chain.last().unwrap();
+            let qend = last.query_end();
+            let rend = last.ref_end();
 
             // Contained in the chain's span: absorb without extending.
             if seed.query_start >= first.query_start
-                && seed.query_end() <= qend as usize
+                && seed.query_end() <= qend
                 && seed.ref_start >= first.ref_start
-                && seed.ref_end() <= rend as usize
+                && seed.ref_end() <= rend
             {
                 merged = true;
                 break;
@@ -116,7 +116,7 @@ pub fn build_candidate_chains(mut sorted: Vec<MEM>) -> Vec<Chain> {
                 && (x - y).abs() <= CHAIN_BAND_WIDTH
                 && x - last.length as i64 <= MAX_CHAIN_GAP
                 && y - last.length as i64 <= MAX_CHAIN_GAP
-                && (seed.query_start as i64 >= qend || seed.ref_start as i64 >= rend)
+                && (seed.query_start >= qend || seed.ref_start >= rend)
             {
                 chain.push(seed);
                 merged = true;
@@ -143,7 +143,7 @@ pub fn mem_chain_flt(mut chains: Vec<Chain>, min_seed_len: usize) -> Vec<Chain> 
     chains.sort_by_key(|c| std::cmp::Reverse(c.weight));
 
     let mut kept: Vec<Chain> = Vec::with_capacity(chains.len());
-    for cand in chains.into_iter() {
+    for cand in chains {
         let mut contained = false;
         for k in &kept {
             let b_max = k.qbeg.max(cand.qbeg);
