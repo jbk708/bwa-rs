@@ -4,30 +4,43 @@ Tracking the investigation into why `bwa-rs` SAM output is not byte-identical to
 upstream **bwa-mem2** on the bwa-mem2 performance dataset (D2 / SRR7733443
 against `human_g1k_v37.fasta`).
 
-**Status:** Phase 1 complete (2026-06-03). All format/field/seeding tickets
-(T-001 … T-024) are **FIXED**: full human-genome index (64-bit SA), both strands,
-soft-clipping, min-score filter, QNAME trim, paired-end fields, multi-contig
-coordinates, SEQ/QUAL, `M`-form CIGAR, the optional-tag set (NM/MD/MC/AS/XS),
-index persistence, parallel alignment, the `mem_approx_mapq_se` MAPQ formula,
-robust `mem_pestat` insert-size estimation, mate rescue, and secondary detection.
+**Status:** Phase 1 (format/field/seeding, T-001 … T-024) and Phase 2 (placement
+fidelity, T-025 … T-027) **complete** (2026-06-04). bwa-rs now has: full
+human-genome index (64-bit SA), both strands, soft-clipping, min-score filter,
+QNAME trim, paired-end fields, multi-contig coordinates, SEQ/QUAL, `M`-form CIGAR,
+the optional-tag set (NM/MD/MC/AS/XS), index persistence, parallel alignment, the
+`mem_approx_mapq_se` + `mem_sam_pe` MAPQ formulas, robust `mem_pestat` insert-size
+estimation, mate rescue, faithful `ksw_extend` region extension, max-extended-score
+primary selection, and `mem_chain_flt` chain filtering.
 
-**Where parity stands (chr1, vs the bwa-mem2 binary):**
+**Where parity stands (chr1, vs the bwa-mem2 2.2.1 binary, after T-027):**
 - **Uniquely-mapping reads (300-uniq) — effectively at parity.** Per-field vs
-  bwa-mem2: POS/RNAME/RNEXT/PNEXT **0%**; CIGAR/FLAG/TLEN **0.7%**;
-  MAPQ/SEQ/QUAL **≤0.3%** (a handful of mate-rescue / soft-clip-boundary records).
-- **Multi-mapper / repetitive sample (sub2k) — placement still diverges.** POS
-  **40.7%**, CIGAR **34.1%**, with FLAG/TLEN/MAPQ/RNAME cascading from it.
+  bwa-mem2: POS/RNAME/RNEXT/PNEXT/TLEN **0%**; FLAG **0.7%**; CIGAR/MAPQ/SEQ/QUAL
+  **0.3%** (a handful of mate-rescue / soft-clip-boundary records). SAM columns
+  1–10 are byte-identical to the T-026 baseline.
+- **Multi-mapper / repetitive sample (sub2k) — still diverges.** POS **30.9%**,
+  CIGAR **26.0%**, MAPQ **39.5%**, FLAG **33.8%**, TLEN **43.9%**, SEQ/QUAL
+  **14.4%**, RNAME/RNEXT 0.6% — down from POS 40.7% / CIGAR 34.1% at the start of
+  Phase 2.
 
-**The remaining frontier is one root cause: final alignment placement (POS/CIGAR)
-on repetitive, heavily-soft-clipped, multi-mapping reads.** Everything downstream
-(proper-pair FLAG, TLEN, mate RNAME/PNEXT, SEQ/QUAL orientation, MAPQ) falls into
-line once POS+CIGAR match — exactly as the uniq set demonstrates. Closing it is
-**Phase 2** (T-025 … T-027 below): faithful `mem_chain2aln` / `ksw_extend` region
-extension and max-score primary selection — the deepest part of bwa-mem.
+**The remaining frontier — Phase 3 (T-028 … below).** The Phase-1/2 residual notes
+converge on one architectural gap: **bwa-rs collapses each read to a single
+placement before pairing.** `align_read` returns one max-extended-score region and
+ignores its mate; the production `align_batch` path aligns every read independently;
+the mate enters only *after* placement (`rescue_mate` when one end is unmapped, then
+`pair_mapq` / `mate_fields`). So bwa-rs cannot (a) choose the mate-concordant locus
+among equally-scoring multi-mapper placements, nor (b) surface the inexact
+second-best locus that grades MAPQ down. bwa keeps the full per-read candidate-region
+array (`mem_alnreg_v`) and resolves placement **jointly across the pair** in
+`mem_sam_pe` / `mem_pair`. Phase 3 opens with an **investigation ticket (T-028)**
+that buckets the residual `sub2k` records by root cause, then the implementation
+tickets it prioritizes. Verification: `sub2k` is the Phase-3 target; the `uniq` set
+stays the zero-regression gate (it is at parity, so any placement change there is a
+regression).
 
 **Verification baseline:** chr1 (249 Mbp), `-k 19 -t 16`. Two sets from SRR7733443
 with normalized QNAMEs: **300 uniquely-mapping pairs** (`uniq`, the zero-regression
-gate) and a **2000-pair multi-mapper sample** (`sub2k`, the Phase-2 target).
+gate) and a **2000-pair multi-mapper sample** (`sub2k`, the Phase-2/3 target).
 Compared with `bench/compare.sh` against the bwa-mem2 binary outputs
 (`bench/bwamem2_uniq.sam`, `bench/bwamem2_2k.sam`).
 
@@ -793,10 +806,12 @@ heavily-soft-clipped, multi-mapping reads — broken into the three pieces of bw
 `mem_align1_core` that bwa-rs still approximates. **T-025** is the smallest and
 unblocks the others; **T-026** is the deep core; **T-027** refines the candidate
 set. **T-025 + T-026 cut sub2k POS 40.7 % → 31.1 % and CIGAR 34.1 % → 25.9 %** with
-zero uniq regression; **T-027** (chain filtering) remains, mainly to close the MAPQ
-over-scoring the faithful placement now exposes. Verification: the `sub2k` set
-(Phase-2 target); the `uniq` set stays the zero-regression gate (it is already at
-parity, so any placement change there is a regression).
+zero uniq regression; **T-027** (chain filtering) then corrected the XS
+over-counting the faithful placement exposed (sub2k POS 31.1% → 30.9%, CIGAR
+≈flat). The residual multi-mapper placement gap is carried forward to **Phase 3**.
+Verification: the `sub2k` set (Phase-2 target); the `uniq` set stays the
+zero-regression gate (it is already at parity, so any placement change there is a
+regression).
 
 ### T-025: Select the primary by extended-alignment score, not chain score
 - **Status:** FIXED (branch `t025-max-score-primary`)
@@ -941,3 +956,143 @@ parity, so any placement change there is a regression).
   richer approximate-secondary seeding (the **T-024** class), not chain filtering.
 - **Dependencies:** Composes with **T-025**/**T-026**; landed independently as a
   candidate-set refinement.
+
+---
+
+## Phase 3: multi-mapper placement & pairing (T-028 INVESTIGATION; T-029 … T-032 OPEN)
+
+After Phase 2 the `uniq` set is at parity but `sub2k` still diverges (POS 30.9%,
+CIGAR 26.0%, MAPQ 39.5%, FLAG 33.8%, TLEN 43.9%). The Phase-1/2 residual notes
+(T-021, T-022, T-024, T-026, T-027) all point at the same architectural gap:
+**bwa-rs collapses each read to a single placement before pairing.** `align_read`
+(`src/alignment.rs`) builds a transient candidate-region set (unfiltered MEMs +
+`collect_short_seeds`, chain-filtered) only to derive `sub`/XS, then returns **one**
+max-extended-score region; the `_mate` argument is ignored and the production
+`align_batch` path aligns every read independently. The mate enters only *after*
+placement — `rescue_mate` (one end unmapped) and `pair_mapq`/`mate_fields`. bwa
+instead keeps the whole per-read region array (`mem_alnreg_v`) and, in
+`mem_sam_pe`/`mem_pair`, **chooses each mate's locus jointly** to maximize the pair
+score (both-mate score + insert-size log-likelihood vs an unpaired penalty). On a
+multi-mapper whose read maps equally well to several loci, that joint choice is what
+puts the read next to its mate — e.g. `SRR7733443.732#128` lands at POS 249,240,229
+in bwa-rs but at 10,027 (beside its mate) in bwa-mem2.
+
+Phase 3 is structured **investigate → implement**: **T-028** buckets the residual
+records by root cause and quantifies each bucket, fixing the priority of the
+implementation tickets (**T-029 … T-032**), which are written as hypotheses gated on
+its findings. The `uniq` set remains the zero-regression gate throughout.
+
+### T-028: Characterize & bucket the residual `sub2k` divergence (INVESTIGATION)
+- **Status:** OPEN
+- **Severity:** high (gates and prioritizes all of Phase 3)
+- **Affected field(s):** POS, CIGAR, FLAG, TLEN, MAPQ, RNAME (diagnosis only — no code change).
+- **Goal:** Turn the aggregate `sub2k` percentages into a per-record root-cause
+  breakdown so the implementation tickets are ordered by real impact, not hypothesis.
+- **Method:**
+  1. Start from the T-027 comparison (`bench/bwars_2n_2k_t027.sam` vs
+     `bench/bwamem2_2k.sam`, `bench/compare.sh`). For every record that differs on
+     POS/CIGAR/FLAG/MAPQ, classify it into one bucket:
+     - **B1 mate-disambiguated placement** — bwa-rs places the read at a different
+       (often distant or opposite-strand) locus of equal/near-equal score, while
+       bwa-mem2's locus is the one concordant with the already-agreed mate. Detect:
+       bwa-mem2 POS is within the insert window of the mate and bwa-rs POS is not, or
+       strand flips (`111S40M` vs `40M111S`). Seed examples: `732#128`, `654#64`,
+       `921#128`, `987#64`.
+     - **B2 unmapped-vs-mapped** — bwa-rs emits `*` (RNAME/POS unset) where bwa-mem2
+       maps the read. Seed examples: `182#64`, `182#128`, `247#64`.
+     - **B3 MAPQ-only over-scoring** — POS+CIGAR agree but bwa-rs MAPQ > bwa-mem2
+       (missing inexact secondary locus → `sub = 0`). Seed examples: `732`, `730`,
+       `91` (MAPQ 10/17/40 vs 0). This is the T-024/T-027 residual.
+     - **B4 soft-clip-boundary / small POS shift** — same locus, CIGAR boundary or
+       1–10 bp POS shift (the T-026 residual tail).
+     - **B5 other** — anything unclassified (record and inspect).
+  2. Report, per bucket: record count, share of the POS / CIGAR / FLAG / MAPQ
+     divergence it accounts for, and 2–3 worked examples with both tools' fields.
+  3. Cross-check B1 by re-running bwa-rs with pairing forced off in bwa-mem2 (or by
+     inspecting whether bwa-mem2's chosen locus is the mate-concordant one) to confirm
+     the bucket is genuinely pairing-driven and not a scoring gap.
+- **Deliverable:** `bench/compare_t028_buckets.md` with the table above, and this
+  ticket updated with the bucket sizes + the resulting priority order for T-029…T-032
+  (e.g. if B1 dominates, T-029+T-030 lead; if B3 dominates, T-032 leads).
+- **Dependencies:** None (read-only analysis on existing SAMs). Gates T-029 … T-032.
+
+### T-029: Expose the per-read candidate-region array (`mem_alnreg_v`)
+- **Status:** OPEN
+- **Severity:** high (structural prerequisite for T-030/T-031/T-032)
+- **Affected field(s):** none directly — enables the tickets that move POS/FLAG/MAPQ.
+- **Symptom:** `align_read` already computes the extended candidate regions (it needs
+  them for `sub`/XS) but discards all but the single chosen primary. The paired driver
+  in `src/main.rs` therefore has nothing to choose among — it can only rescue or
+  recompute MAPQ on a fixed placement.
+- **Suspected cause:** `Aligner::align_read` → returns one `AlignmentResult`;
+  `ParallelAligner::align_batch` and the `align_all` flat-list path (`src/main.rs`)
+  are built around one-region-per-read.
+- **Resolution (proposed):** Return the deduped, score-sorted candidate-region list
+  (bwa's `mem_alnreg_v`: position, strand, score, query span, CIGAR, `sub`/`sub_n`,
+  `frac_rep`) from a new entry point (keep the single-result API as a thin wrapper
+  that takes region 0, so the single-end path and all current tests stay byte-stable).
+  Plumb the array through `align_batch`. **Zero output change on its own** — verified
+  by the `uniq` gate and `sub2k` byte-identity to T-027; this ticket only changes the
+  data available downstream.
+- **Dependencies:** Feeds **T-030**, **T-031**, **T-032**. Independent of T-028's
+  outcome (the array is needed by any of the fixes), so it can start in parallel.
+
+### T-030: Paired-end mate-aware placement selection (`mem_sam_pe` / `mem_pair`)
+- **Status:** OPEN
+- **Severity:** high (expected largest remaining POS/FLAG/TLEN driver — pending T-028)
+- **Affected field(s):** POS, RNAME, FLAG, TLEN, PNEXT, RNEXT, SEQ/QUAL orientation, MAPQ.
+- **Symptom:** Bucket **B1** — on multi-mappers bwa-rs picks a per-read max-score
+  locus that need not be the one pairing concordantly with the mate; bwa-mem2 picks
+  the pairing-maximizing combination. Cascades into FLAG (proper-pair bit), TLEN,
+  PNEXT/RNEXT, and SEQ/QUAL orientation.
+- **Suspected cause:** No `mem_pair` pass. `src/main.rs` pairs two already-fixed
+  single placements; `align_read` ignores `_mate`.
+- **Resolution (proposed):** Port `mem_sam_pe`'s region pairing over the T-029 arrays:
+  for each candidate region of mate 1 × mate 2, score the pair as `score1 + score2 +
+  insert_bonus(d)` (reuse T-022's `insert_bonus`/`pair_mapq`), pick the max-scoring
+  concordant combination above the unpaired alternative (`PEN_UNPAIRED`), and emit
+  those two placements; fall back to the current independent best when no pair beats
+  unpaired. The T-022 paired-MAPQ recompute then runs on the *selected* pair (with the
+  real competing-pair `subo`, closing the T-022 `100124` overshoot residual). Guard:
+  `uniq` stays byte-identical (unique pairs have one region each, so the selection is a
+  no-op there); measure `sub2k` POS/FLAG/TLEN.
+- **Dependencies:** **T-029** (region arrays). Subsumes part of **T-022**'s residual.
+
+### T-031: Unmapped-vs-mapped recovery on multi-mappers
+- **Status:** OPEN
+- **Severity:** medium (pending T-028 bucket size)
+- **Affected field(s):** RNAME, POS, FLAG, RNEXT, PNEXT (records bwa-rs leaves `*`).
+- **Symptom:** Bucket **B2** — bwa-rs emits `*` where bwa-mem2 places the read
+  (`182#64`, `182#128`, `247#64`). Either the read's only acceptable locus scores
+  below `-T` on its own but is rescued/accepted via the mate, or seeding surfaces no
+  region at all for it.
+- **Suspected cause:** `result.score < self.min_score → unmapped` is applied per read
+  with no pair context; `rescue_mate` only fires when the *other* mate already mapped,
+  and mate rescue runs after independent placement rather than as part of pairing.
+- **Resolution (proposed):** Determine via T-028 whether these are (a) pair-rescue
+  cases (mate maps, orphan should be `mem_matesw`-rescued — check the existing
+  `rescue_mate` trigger/threshold) or (b) sub-`T` placements that bwa keeps because the
+  *pair* clears threshold. Fix accordingly: extend rescue to fire from the T-030
+  selected pair, and/or apply bwa's pair-conditioned acceptance. Guard `uniq` (no
+  unmapped records there) for zero regression.
+- **Dependencies:** **T-029**; likely **T-030** (pairing selects the locus to rescue toward).
+
+### T-032: Residual MAPQ over-scoring from inexact secondary loci
+- **Status:** OPEN
+- **Severity:** medium (the T-024/T-027 residual, re-measured after T-029…T-031)
+- **Affected field(s):** MAPQ, XS.
+- **Symptom:** Bucket **B3** — POS+CIGAR agree but bwa-rs MAPQ is too high because the
+  second-best locus is *inexact* (bwa DP-extends a short shared seed across
+  mismatches/indels; bwa-rs's exact-MEM + third-round seeding never surfaces it), so
+  `sub = 0` → MAPQ 60. Documented across T-021/T-024/T-027 as the inverse of chain
+  filtering — only richer secondary discovery can close it.
+- **Suspected cause:** The candidate set fed to `sub`/XS still misses inexact
+  second-best alignments; `collect_short_seeds` (third round) catches some but not the
+  cross-mismatch/indel loci bwa reaches by extension.
+- **Resolution (proposed):** Re-measure after T-029…T-031 (mate-aware placement may
+  already supply the competing locus via the pair). If a gap remains, widen secondary
+  discovery toward bwa's region set — e.g. extend more sub-optimal chains / seed the
+  primary's flanks against repeat copies — feeding `sub`. Guard `uniq`; target the
+  identically-placed-read MAPQ exact-match rate on `sub2k`.
+- **Dependencies:** **T-029**; re-scoped by **T-028** and the T-030/T-031 outcome
+  (may shrink or close before standalone work is needed).
