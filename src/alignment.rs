@@ -289,7 +289,7 @@ impl Aligner {
         let mut seen: Vec<(usize, bool)> = vec![(result.position, result.reverse_strand)];
         regions.push(result);
         let mut rest: Vec<AlignmentResult> = placements;
-        rest.sort_by(|a, b| b.score.cmp(&a.score));
+        rest.sort_by_key(|p| std::cmp::Reverse(p.score));
         for p in rest {
             let key = (p.position, p.reverse_strand);
             if seen.contains(&key) {
