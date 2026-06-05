@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 
-use crate::alignment::{Aligner, Scoring};
+use crate::alignment::{Aligner, ReadRegions, Scoring};
 use crate::error::BwaError;
 use crate::fm_index::FMIndex;
 use crate::paired::InsertSizeDistribution;
@@ -44,6 +44,13 @@ impl ParallelAligner {
         queries
             .par_iter()
             .map(|q| self.inner.align_read(q, None))
+            .collect()
+    }
+
+    pub fn align_batch_regions(&self, queries: &[&[u8]]) -> Vec<Result<ReadRegions, BwaError>> {
+        queries
+            .par_iter()
+            .map(|q| self.inner.align_read_regions(q, None))
             .collect()
     }
 
@@ -276,6 +283,32 @@ mod tests {
         let aligner = ParallelAligner::new(index, ref_data).min_seed_len(3);
         let result = aligner.align_single(&[0, 1, 2, 3]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_align_batch_regions_matches_align_batch() {
+        let (aligner, _ref_data) = create_test_aligner();
+        let q1 = vec![0u8, 1, 2, 3];
+        let q2 = vec![2u8, 3, 0, 1];
+        let queries = vec![q1.as_slice(), q2.as_slice()];
+
+        let batch = aligner.align_batch(&queries);
+        let batch_regions = aligner.align_batch_regions(&queries);
+
+        assert_eq!(batch.len(), batch_regions.len());
+        for (ar_res, rr_res) in batch.iter().zip(batch_regions.iter()) {
+            let ar = ar_res.as_ref().unwrap();
+            let rr = rr_res.as_ref().unwrap();
+            if ar.flag & 0x4 == 0 {
+                // mapped: regions[0] must agree with align_batch
+                assert!(!rr.regions.is_empty());
+                assert_eq!(rr.regions[0].position, ar.position);
+                assert_eq!(rr.regions[0].mapq, ar.mapq);
+            } else {
+                // unmapped: regions must be empty
+                assert!(rr.regions.is_empty());
+            }
+        }
     }
 
     #[test]

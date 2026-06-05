@@ -959,7 +959,7 @@ regression).
 
 ---
 
-## Phase 3: multi-mapper placement & pairing (T-028 FIXED; T-029 … T-032 OPEN)
+## Phase 3: multi-mapper placement & pairing (T-028, T-029 FIXED; T-030 … T-032 OPEN)
 
 After Phase 2 the `uniq` set is at parity but `sub2k` still diverges (POS 30.9%,
 CIGAR 26.0%, MAPQ 39.5%, FLAG 33.8%, TLEN 43.9%). The Phase-1/2 residual notes
@@ -1059,7 +1059,7 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
      fidelity, not a new ticket yet.
 
 ### T-029: Expose the per-read candidate-region array (`mem_alnreg_v`)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t029-expose-regions`)
 - **Severity:** high (structural prerequisite for T-030/T-031/T-032)
 - **Affected field(s):** none directly — enables the tickets that move POS/FLAG/MAPQ.
 - **Symptom:** `align_read` already computes the extended candidate regions (it needs
@@ -1069,15 +1069,28 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 - **Suspected cause:** `Aligner::align_read` → returns one `AlignmentResult`;
   `ParallelAligner::align_batch` and the `align_all` flat-list path (`src/main.rs`)
   are built around one-region-per-read.
-- **Resolution (proposed):** Return the deduped, score-sorted candidate-region list
-  (bwa's `mem_alnreg_v`: position, strand, score, query span, CIGAR, `sub`/`sub_n`,
-  `frac_rep`) from a new entry point (keep the single-result API as a thin wrapper
-  that takes region 0, so the single-end path and all current tests stay byte-stable).
-  Plumb the array through `align_batch`. **Zero output change on its own** — verified
-  by the `uniq` gate and `sub2k` byte-identity to T-027; this ticket only changes the
-  data available downstream.
-- **Dependencies:** Feeds **T-030**, **T-031**, **T-032**. Independent of T-028's
-  outcome (the array is needed by any of the fixes), so it can start in parallel.
+- **Resolution (implemented):** Added `pub struct ReadRegions { regions:
+  Vec<AlignmentResult>, sub: i32, sub_n: u32, frac_rep: f32 }` (`src/alignment.rs`).
+  The entire former `align_read` body moved into a new
+  `Aligner::align_read_regions(query, mate) -> Result<ReadRegions, BwaError>`: the
+  four early unmapped returns now yield `regions: []` (carrying the in-scope
+  `frac_rep`), and the tail assembles the region list as **chosen primary first, then
+  the remaining candidate placements sorted by score descending and deduped by
+  (position, strand)**. `align_read` is now a thin wrapper returning
+  `regions.into_iter().next()` or `unmapped_result()` when empty — so its output is
+  unchanged by construction (`regions[0]` *is* the identically-computed primary).
+  `ParallelAligner::align_batch_regions` (`src/parallel.rs`) mirrors `align_batch`
+  over the new entry point; `ReadRegions` is re-exported from `src/lib.rs` alongside
+  `Aligner`. `align_batch` / `align_batch_with_mates` / `align_single` / `align_paired`
+  and `src/main.rs` are untouched. Three unit tests added (regions[0] == align_read on
+  pos/score/cigar/mapq/strand/xs; unmapped → empty; batch-regions agrees with batch).
+- **Verified (chr1, `-k 19 -t 16`):** **zero output change** — both the `uniq`
+  (300-pair) and `sub2k` (2000-pair) SAMs are **byte-identical to the T-027 baseline**
+  (excluding the `@PG CL:` output-filename field); sub2k runtime unchanged (~35 s).
+  350 lib+suite tests pass (+3); `cargo clippy --lib -- -D warnings` and
+  `cargo fmt --check` clean.
+- **Dependencies:** Feeds **T-030**, **T-031**, **T-032**. Landed independently of
+  T-028's outcome (the array is needed by any of the fixes).
 
 ### T-030: Paired-end mate-aware placement selection (`mem_sam_pe` / `mem_pair`)
 - **Status:** OPEN
