@@ -40,6 +40,20 @@ impl ParallelAligner {
         self.inner.match_score()
     }
 
+    pub fn region_se_mapq(
+        &self,
+        region: &AlignmentResult,
+        sub: i32,
+        sub_n: u32,
+        frac_rep: f32,
+    ) -> u8 {
+        self.inner.region_se_mapq(region, sub, sub_n, frac_rep)
+    }
+
+    pub fn pair_margin(&self) -> i32 {
+        self.inner.pair_margin()
+    }
+
     pub fn align_batch(&self, queries: &[&[u8]]) -> Vec<Result<AlignmentResult, BwaError>> {
         queries
             .par_iter()

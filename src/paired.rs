@@ -13,7 +13,7 @@ const MIN_DIR_CNT: usize = 10;
 
 /// bwa `-U` default unpaired-read penalty subtracted from the unpaired score when
 /// choosing between paired and unpaired placements.
-const PEN_UNPAIRED: i32 = 17;
+pub const PEN_UNPAIRED: i32 = 17;
 
 /// Fully-assembled per-read mate fields for SAM output.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,48 +192,115 @@ fn insert_bonus(insert_size: u32, dist: &InsertSizeDistribution, a: i32) -> i32 
     bonus as i32
 }
 
-/// Port of bwa-mem2 `mem_sam_pe`'s paired-MAPQ recalculation for a pair with one
-/// candidate placement per end. Returns the adjusted (read1_mapq, read2_mapq).
-/// `match_score` is bwa's `opt->a`. Inputs come from each mate's AlignmentResult
-/// (score, mapq as the SE estimate, frac_rep). The pair must be FR-concordant
-/// (call only when is_proper_pair && both mapped); insert size is taken from
-/// fr_insert_size.
-///
-/// bwa's actual gate is the pairing score `o > 0`; with both mates filtered above
-/// the `-T` threshold a proper FR pair always clears it, so callers gate on
-/// [`is_proper_pair`]. With a single candidate per end there are no alternative
-/// pairings, so the suboptimal-pairing count `n_sub` is 0 and bwa's
-/// `4.343 * ln(n_sub + 1)` multi-hit penalty drops out.
-pub fn pair_mapq(
-    read1: &AlignmentResult,
-    read2: &AlignmentResult,
+/// Result of bwa's `mem_pair`: the chosen region index per mate plus the pairing
+/// scores feeding the paired MAPQ recompute.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PairChoice {
+    pub idx1: usize,
+    pub idx2: usize,
+    /// bwa `o`: best pairing score.
+    pub score: i32,
+    /// bwa `subo`: second-best pairing score (0 when the pairing is unique).
+    pub subo: i32,
+    /// bwa `n_sub`: count of near-suboptimal pairings.
+    pub n_sub: u32,
+}
+
+/// Port of bwa's `mem_pair`: over the two reads' candidate-region arrays, find the
+/// FR-concordant region pair (one per mate, opposite strands, insert within the
+/// proper window) maximizing `score1 + score2 + insert_bonus(d)`. Returns the best
+/// pairing's region indices and the pairing scores, or `None` when no concordant
+/// pair exists. `pair_margin` is bwa's `tmp` used to count near-suboptimal pairings.
+pub fn mem_pair(
+    regions1: &[AlignmentResult],
+    regions2: &[AlignmentResult],
     dist: &InsertSizeDistribution,
     match_score: i32,
+    pair_margin: i32,
+) -> Option<PairChoice> {
+    let mut pairings: Vec<(i32, usize, usize)> = Vec::new();
+    for (i, r1) in regions1.iter().enumerate() {
+        if r1.is_unmapped() {
+            continue;
+        }
+        for (j, r2) in regions2.iter().enumerate() {
+            if r2.is_unmapped() {
+                continue;
+            }
+            if let Some(d) = fr_insert_size(r1, r2) {
+                if d >= dist.lower_bound() && d <= dist.upper_bound() {
+                    let q = (r1.score + r2.score + insert_bonus(d, dist, match_score)).max(0);
+                    pairings.push((q, i, j));
+                }
+            }
+        }
+    }
+    if pairings.is_empty() {
+        return None;
+    }
+    // bwa takes the max pairing as `o`. Among equal scores it tie-breaks by an
+    // id-hash; we instead prefer the lower-index (more-primary) pairing, which is
+    // deterministic and keeps uniquely-mapping reads on their primary. Exact-tie
+    // multimappers cannot be byte-matched to bwa regardless.
+    pairings.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(b.2.cmp(&a.2)));
+    let last = pairings.len() - 1;
+    let (o, idx1, idx2) = pairings[last];
+    let subo = if pairings.len() > 1 {
+        pairings[last - 1].0
+    } else {
+        0
+    };
+    let n_sub = pairings[..last]
+        .iter()
+        .filter(|&&(q, _, _)| subo - q <= pair_margin)
+        .count() as u32;
+    Some(PairChoice {
+        idx1,
+        idx2,
+        score: o,
+        subo,
+        n_sub,
+    })
+}
+
+/// bwa mem_sam_pe's SE↔PE MAPQ reconciliation: keep the larger of the single-end
+/// estimate and the paired estimate, but never lift the SE value by more than 40.
+fn combine_se_pe(q_se: i32, q_pe: i32) -> i32 {
+    if q_se > q_pe {
+        q_se
+    } else if q_pe < q_se + 40 {
+        q_pe
+    } else {
+        q_se + 40
+    }
+}
+
+/// Port of bwa `mem_sam_pe`'s paired-MAPQ recompute for a chosen pair. `choice`
+/// comes from [`mem_pair`], `score_un` is the unpaired alternative
+/// `score1 + score2 - PEN_UNPAIRED`, `q_se1`/`q_se2` are each selected region's
+/// single-end MAPQ, and `frac_rep1`/`frac_rep2` their repeat fractions. Returns the
+/// adjusted (mapq1, mapq2). The `csub`-clamp bwa applies afterward is omitted (bwa-rs
+/// regions carry no per-region csub).
+pub fn paired_mapq(
+    choice: &PairChoice,
+    score_un: i32,
+    q_se1: u8,
+    q_se2: u8,
+    frac_rep1: f32,
+    frac_rep2: f32,
+    match_score: i32,
 ) -> (u8, u8) {
-    let insert_size = match fr_insert_size(read1, read2) {
-        Some(s) => s,
-        None => return (read1.mapq, read2.mapq),
-    };
-
-    let paired_score = read1.score + read2.score;
-    let o = paired_score + insert_bonus(insert_size, dist, match_score);
-    let subo = (paired_score - PEN_UNPAIRED).max(0);
-
-    let mut q_pe = raw_mapq(o - subo, match_score).clamp(0, 60);
-    q_pe = (q_pe as f64 * (1.0 - 0.5 * (read1.frac_rep + read2.frac_rep) as f64) + 0.499) as i32;
-
-    let adjust = |q_se: i32| -> u8 {
-        let q = if q_se > q_pe {
-            q_se
-        } else if q_pe < q_se + 40 {
-            q_pe
-        } else {
-            q_se + 40
-        };
-        q as u8
-    };
-
-    (adjust(read1.mapq as i32), adjust(read2.mapq as i32))
+    let subo = choice.subo.max(score_un);
+    let mut q_pe = raw_mapq(choice.score - subo, match_score);
+    if choice.n_sub > 0 {
+        q_pe -= (4.343 * ((choice.n_sub + 1) as f64).ln() + 0.499) as i32;
+    }
+    let q_pe = q_pe.clamp(0, 60);
+    let q_pe = (q_pe as f64 * (1.0 - 0.5 * (frac_rep1 + frac_rep2) as f64) + 0.499) as i32;
+    (
+        combine_se_pe(q_se1 as i32, q_pe) as u8,
+        combine_se_pe(q_se2 as i32, q_pe) as u8,
+    )
 }
 
 pub fn pair_reads(
@@ -531,28 +598,78 @@ mod tests {
         assert!((erfc(-1.0) - 1.8427).abs() < 1e-3, "erfc(-1) ≈ 1.8427");
     }
 
-    // --- pair_mapq ---
+    // --- mem_pair ---
 
     #[test]
-    fn pair_mapq_unique_proper_pair_stays_60() {
-        // Near-mean insert + high scores → q_pe >> 60, so both SE-60 mates stay 60.
+    fn mem_pair_single_concordant_pair() {
+        // Clean FR pair: only one possible concordant pairing → idx1=0, idx2=0, subo=0, n_sub=0.
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        let r1 = scored_read(100, 150, false, 100, 60, 0.0);
+        let r2 = scored_read(350, 150, true, 100, 60, 0.0);
+        let margin = 5;
+        let choice = mem_pair(&[r1], &[r2], &dist, 1, margin).unwrap();
+        assert_eq!(choice.idx1, 0);
+        assert_eq!(choice.idx2, 0);
+        assert_eq!(choice.subo, 0);
+        assert_eq!(choice.n_sub, 0);
+        assert!(choice.score > 0);
+    }
+
+    #[test]
+    fn mem_pair_none_when_no_concordant_pair() {
+        // Same-strand pair: fr_insert_size returns None → no concordant pair.
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        let r1 = scored_read(100, 150, false, 100, 60, 0.0);
+        let r2 = scored_read(350, 150, false, 100, 60, 0.0);
+        assert!(mem_pair(&[r1], &[r2], &dist, 1, 5).is_none());
+    }
+
+    #[test]
+    fn mem_pair_none_when_insert_out_of_window() {
+        // FR pair but far out of the window → lower_bound/upper_bound filter removes it.
+        let dist = InsertSizeDistribution::with_params(300.0, 10.0);
+        let r1 = scored_read(100, 150, false, 100, 60, 0.0);
+        let r2 = scored_read(5000, 150, true, 100, 60, 0.0);
+        assert!(mem_pair(&[r1], &[r2], &dist, 1, 5).is_none());
+    }
+
+    #[test]
+    fn mem_pair_two_equal_scoring_copies_score_equals_subo() {
+        // Two equally-scored concordant pairings: o == subo → o - subo == 0.
+        // Both r1 regions have the same position/score and the same r2 partner, so
+        // (r1a,r2) and (r1b,r2) produce identical pairing scores.
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        let r1a = scored_read(100, 150, false, 100, 60, 0.0);
+        let r1b = scored_read(100, 150, false, 100, 60, 0.0); // same as r1a
+        let r2 = scored_read(350, 150, true, 100, 60, 0.0);
+        let choice = mem_pair(&[r1a, r1b], &[r2], &dist, 1, 5).unwrap();
+        assert_eq!(choice.score, choice.subo, "equal pairings: o == subo");
+    }
+
+    // --- paired_mapq ---
+
+    #[test]
+    fn paired_mapq_unique_high_scoring_pair_stays_60() {
+        // Near-mean insert + high SE scores → q_pe >> 60, so both SE-60 mates stay 60.
         let dist = InsertSizeDistribution::with_params(300.0, 30.0);
         let r1 = scored_read(100, 150, false, 150, 60, 0.0);
         let r2 = scored_read(350, 150, true, 150, 60, 0.0);
-
-        let (m1, m2) = pair_mapq(&r1, &r2, &dist, 1);
+        let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
+        let score_un = r1.score + r2.score - PEN_UNPAIRED;
+        let (m1, m2) = paired_mapq(&choice, score_un, 60, 60, 0.0, 0.0, 1);
         assert_eq!(m1, 60, "high unique pair: read1 mapq stays 60");
         assert_eq!(m2, 60, "high unique pair: read2 mapq stays 60");
     }
 
     #[test]
-    fn pair_mapq_low_se_bumped_toward_pe() {
+    fn paired_mapq_low_se_bumped_toward_pe() {
         // A high-scoring pair lifts a mate whose SE mapq is low via min(q_pe, se+40).
         let dist = InsertSizeDistribution::with_params(300.0, 30.0);
         let r1 = scored_read(100, 150, false, 200, 60, 0.0);
         let r2 = scored_read(350, 150, true, 200, 27, 0.0);
-
-        let (_, m2) = pair_mapq(&r1, &r2, &dist, 1);
+        let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
+        let score_un = r1.score + r2.score - PEN_UNPAIRED;
+        let (_, m2) = paired_mapq(&choice, score_un, 60, 27, 0.0, 0.0, 1);
         assert!(
             m2 > 27,
             "paired evidence should raise low-SE mate: got {m2}"
@@ -560,45 +677,71 @@ mod tests {
     }
 
     #[test]
-    fn pair_mapq_off_mean_insert_lowers_qpe() {
-        // Off-mean insert → negative insert bonus → lower q_pe than the near-mean pair.
+    fn paired_mapq_higher_n_sub_lowers_result() {
+        // Two near-equal pairings → n_sub > 0 lowers q_pe vs the unique case.
         let dist = InsertSizeDistribution::with_params(300.0, 30.0);
-
-        let r1_near = scored_read(100, 150, false, 100, 60, 0.0);
-        let r2_near = scored_read(250, 150, true, 100, 60, 0.0);
-        let r1_far = scored_read(100, 150, false, 100, 60, 0.0);
-        let r2_far = scored_read(950, 150, true, 100, 60, 0.0);
-
-        let (m1_near, _) = pair_mapq(&r1_near, &r2_near, &dist, 1);
-        let (m1_far, _) = pair_mapq(&r1_far, &r2_far, &dist, 1);
-
+        let r1a = scored_read(100, 150, false, 100, 40, 0.0);
+        let r1b = scored_read(200, 150, false, 100, 40, 0.0);
+        let r2a = scored_read(350, 150, true, 100, 40, 0.0);
+        let r2b = scored_read(450, 150, true, 100, 40, 0.0);
+        // Multi-pairing case
+        let choice_multi = mem_pair(
+            &[r1a.clone(), r1b.clone()],
+            &[r2a.clone(), r2b.clone()],
+            &dist,
+            1,
+            1000,
+        )
+        .unwrap();
+        // Single-pairing case
+        let choice_single = mem_pair(&[r1a.clone()], &[r2a.clone()], &dist, 1, 5).unwrap();
+        let score_un = r1a.score + r2a.score - PEN_UNPAIRED;
+        let (m_multi, _) = paired_mapq(&choice_multi, score_un, 40, 40, 0.0, 0.0, 1);
+        let (m_single, _) = paired_mapq(&choice_single, score_un, 40, 40, 0.0, 0.0, 1);
         assert!(
-            m1_far <= m1_near,
-            "off-mean insert should not raise mapq vs near-mean: far={m1_far}, near={m1_near}"
+            m_multi <= m_single,
+            "more pairings (n_sub>0) should not raise mapq: multi={m_multi}, single={m_single}"
         );
     }
 
     #[test]
-    fn pair_mapq_frac_rep_downweights() {
-        // With a low SE mapq the paired q_pe drives the result, so high frac_rep lowers it.
+    fn paired_mapq_frac_rep_downweights() {
+        // With a low SE mapq the paired q_pe drives the result; high frac_rep lowers it.
         let dist = InsertSizeDistribution::with_params(300.0, 30.0);
-        let make_pair = |frac: f32| {
-            (
-                scored_read(100, 150, false, 200, 5, frac),
-                scored_read(250, 150, true, 200, 5, frac),
-            )
-        };
-
-        let (r1_clean, r2_clean) = make_pair(0.0);
-        let (r1_rep, r2_rep) = make_pair(0.8);
-
-        let (m1_clean, _) = pair_mapq(&r1_clean, &r2_clean, &dist, 1);
-        let (m1_rep, _) = pair_mapq(&r1_rep, &r2_rep, &dist, 1);
-
+        let r1 = scored_read(100, 150, false, 200, 5, 0.0);
+        let r2 = scored_read(350, 150, true, 200, 5, 0.0);
+        let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
+        let score_un = r1.score + r2.score - PEN_UNPAIRED;
+        let (m_clean, _) = paired_mapq(&choice, score_un, 5, 5, 0.0, 0.0, 1);
+        let (m_rep, _) = paired_mapq(&choice, score_un, 5, 5, 0.8, 0.8, 1);
         assert!(
-            m1_rep < m1_clean,
-            "high frac_rep should lower mapq: rep={m1_rep}, clean={m1_clean}"
+            m_rep < m_clean,
+            "high frac_rep should lower mapq: rep={m_rep}, clean={m_clean}"
         );
+    }
+
+    // --- combine_se_pe ---
+
+    #[test]
+    fn combine_se_pe_se_wins_when_higher() {
+        assert_eq!(combine_se_pe(50, 30), 50);
+    }
+
+    #[test]
+    fn combine_se_pe_pe_wins_when_higher_and_within_40() {
+        assert_eq!(combine_se_pe(30, 50), 50);
+    }
+
+    #[test]
+    fn combine_se_pe_caps_lift_at_40() {
+        // q_pe = 100, q_se = 10 → q_pe >= q_se + 40 → result = q_se + 40 = 50.
+        assert_eq!(combine_se_pe(10, 100), 50);
+    }
+
+    #[test]
+    fn combine_se_pe_boundary_exactly_40_above() {
+        // q_pe = q_se + 40 exactly → q_pe < q_se + 40 is false → result = q_se + 40.
+        assert_eq!(combine_se_pe(10, 50), 50);
     }
 
     fn unmapped_read() -> AlignmentResult {
