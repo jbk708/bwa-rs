@@ -5,12 +5,13 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use bwa_mem::paired::{
-    is_proper_pair, mate_fields, pair_insert_size, pair_mapq, InsertSizeDistribution,
+    mate_fields, mem_pair, pair_insert_size, paired_mapq, InsertSizeDistribution, PEN_UNPAIRED,
 };
 use bwa_mem::sam::{oriented_seq_qual, write_paired_record as sam_write_paired};
-use bwa_mem::types::AlignmentResult;
+use bwa_mem::types::{AlignmentResult, Cigar};
 use bwa_mem::{
-    fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, Reference, ThreadPoolConfig,
+    fastq::FASTQReader, BwaError, FMIndex, ParallelAligner, ReadRegions, Reference,
+    ThreadPoolConfig,
 };
 
 #[derive(Parser)]
@@ -102,6 +103,10 @@ struct ReadAln {
     bases: Vec<u8>,
     qual: String,
     result: AlignmentResult,
+    regions: Vec<AlignmentResult>,
+    sub: i32,
+    sub_n: u32,
+    frac_rep: f32,
 }
 
 struct RawRead {
@@ -118,6 +123,46 @@ fn align_all(
     queries: &[&[u8]],
 ) -> Result<Vec<AlignmentResult>, BwaError> {
     aligner.align_batch(queries).into_iter().collect()
+}
+
+fn align_all_regions(
+    aligner: &ParallelAligner,
+    queries: &[&[u8]],
+) -> Result<Vec<ReadRegions>, BwaError> {
+    aligner.align_batch_regions(queries).into_iter().collect()
+}
+
+fn unmapped_aln() -> AlignmentResult {
+    let mut u = AlignmentResult::new(0, Cigar::new());
+    u.flag = 0x4;
+    u
+}
+
+/// Build a paired-end `ReadAln` from a raw read and its candidate regions, retaining
+/// only the near-best placements (within `PEN_UNPAIRED` of the primary) so mate-aware
+/// pairing considers only genuine competitors. `result` is seeded with the primary
+/// (or an unmapped placeholder) and may be replaced later by pairing or mate rescue.
+fn paired_read_aln(raw: RawRead, rr: ReadRegions) -> ReadAln {
+    let regions: Vec<AlignmentResult> = if rr.regions.is_empty() {
+        Vec::new()
+    } else {
+        let cutoff = rr.regions[0].score - PEN_UNPAIRED;
+        rr.regions
+            .into_iter()
+            .filter(|r| r.score >= cutoff)
+            .collect()
+    };
+    let result = regions.first().cloned().unwrap_or_else(unmapped_aln);
+    ReadAln {
+        qname: raw.qname,
+        bases: raw.bases,
+        qual: raw.qual,
+        result,
+        regions,
+        sub: rr.sub,
+        sub_n: rr.sub_n,
+        frac_rep: rr.frac_rep,
+    }
 }
 
 fn run_mem(args: MemArgs) -> Result<(), BwaError> {
@@ -181,8 +226,8 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
         // Two-phase: align every pair and estimate the insert-size distribution
         // first, then emit records so proper-pair flags reflect the full dataset.
         //
-        // The whole file must be buffered here (it cannot be chunked): is_proper_pair
-        // and pair_mapq below need the complete InsertSizeDistribution, which is only
+        // The whole file must be buffered here (it cannot be chunked): mem_pair and
+        // paired_mapq below need the complete InsertSizeDistribution, which is only
         // final once every pair has been aligned.
         let mut r2_iter = r2.into_iter();
 
@@ -207,7 +252,7 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             raw_pairs.push((read1, read2));
         }
 
-        // Step 2: flat ordered query list — read1 then read2 per pair. align_batch
+        // Step 2: flat ordered query list — read1 then read2 per pair. align_batch_regions
         // preserves input order, so results map 1-to-1 back onto the pairs.
         let mut query_refs: Vec<&[u8]> = Vec::with_capacity(raw_pairs.len() * 2);
         for (r1, r2) in &raw_pairs {
@@ -217,36 +262,26 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
             }
         }
 
-        // Step 3: align the whole batch in parallel.
-        let mut result_iter = align_all(&aligner, &query_refs)?.into_iter();
+        // Step 3: align the whole batch in parallel, collecting full region arrays.
+        let mut result_iter = align_all_regions(&aligner, &query_refs)?.into_iter();
 
-        // Step 4: walk results in order to build buf and collect FR insert sizes.
+        // Step 4: walk results in order to build buf and collect FR insert sizes from primaries.
         let mut buf: Vec<(ReadAln, Option<ReadAln>)> = Vec::with_capacity(raw_pairs.len());
         let mut insert_sizes: Vec<u32> = Vec::with_capacity(raw_pairs.len());
-        let mut next_result = || {
+        let mut next_rr = || {
             result_iter
                 .next()
                 .ok_or_else(|| BwaError::Alignment("batch result count mismatch".into()))
         };
         for (r1, r2) in raw_pairs {
-            let read1 = ReadAln {
-                qname: r1.qname,
-                bases: r1.bases,
-                qual: r1.qual,
-                result: next_result()?,
-            };
+            let read1 = paired_read_aln(r1, next_rr()?);
 
             let read2 = if let Some(r2) = r2 {
-                let result2 = next_result()?;
-                if let Some(isize) = pair_insert_size(&read1.result, &result2) {
+                let read2 = paired_read_aln(r2, next_rr()?);
+                if let Some(isize) = pair_insert_size(&read1.result, &read2.result) {
                     insert_sizes.push(isize);
                 }
-                Some(ReadAln {
-                    qname: r2.qname,
-                    bases: r2.bases,
-                    qual: r2.qual,
-                    result: result2,
-                })
+                Some(read2)
             } else {
                 None
             };
@@ -267,20 +302,60 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
                 // banded SW within the insert-size window around the mapped mate.
                 if read1.result.is_unmapped() && !read2.result.is_unmapped() {
                     if let Some(rescued) = aligner.rescue_mate(&read1.bases, &read2.result, &dist) {
-                        read1.result = rescued;
+                        read1.result = rescued.clone();
+                        read1.regions = vec![rescued];
                     }
                 } else if read2.result.is_unmapped() && !read1.result.is_unmapped() {
                     if let Some(rescued) = aligner.rescue_mate(&read2.bases, &read1.result, &dist) {
-                        read2.result = rescued;
+                        read2.result = rescued.clone();
+                        read2.regions = vec![rescued];
                     }
                 }
-                let proper = is_proper_pair(&read1.result, &read2.result, &dist);
-                if proper {
-                    let (m1, m2) =
-                        pair_mapq(&read1.result, &read2.result, &dist, aligner.match_score());
-                    read1.result.mapq = m1;
-                    read2.result.mapq = m2;
+
+                let mut proper = false;
+                if !read1.regions.is_empty() && !read2.regions.is_empty() {
+                    if let Some(choice) = mem_pair(
+                        &read1.regions,
+                        &read2.regions,
+                        &dist,
+                        aligner.match_score(),
+                        aligner.pair_margin(),
+                    ) {
+                        let score_un =
+                            read1.regions[0].score + read2.regions[0].score - PEN_UNPAIRED;
+                        if choice.score > score_un {
+                            let mut place1 = read1.regions[choice.idx1].clone();
+                            let mut place2 = read2.regions[choice.idx2].clone();
+                            let q_se1 = aligner.region_se_mapq(
+                                &place1,
+                                read1.sub,
+                                read1.sub_n,
+                                read1.frac_rep,
+                            );
+                            let q_se2 = aligner.region_se_mapq(
+                                &place2,
+                                read2.sub,
+                                read2.sub_n,
+                                read2.frac_rep,
+                            );
+                            let (m1, m2) = paired_mapq(
+                                &choice,
+                                score_un,
+                                q_se1,
+                                q_se2,
+                                read1.frac_rep,
+                                read2.frac_rep,
+                                aligner.match_score(),
+                            );
+                            place1.mapq = m1;
+                            place2.mapq = m2;
+                            read1.result = place1;
+                            read2.result = place2;
+                            proper = true;
+                        }
+                    }
                 }
+
                 let mf1 = mate_fields(&read1.result, &read2.result, true, proper);
                 let mf2 = mate_fields(&read2.result, &read1.result, false, proper);
                 let mut emit = |r: &ReadAln, mf: &_| {

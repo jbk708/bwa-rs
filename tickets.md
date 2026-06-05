@@ -959,7 +959,7 @@ regression).
 
 ---
 
-## Phase 3: multi-mapper placement & pairing (T-028, T-029 FIXED; T-030 … T-032 OPEN)
+## Phase 3: multi-mapper placement & pairing (T-028, T-029, T-030 FIXED; T-031 … T-032 OPEN)
 
 After Phase 2 the `uniq` set is at parity but `sub2k` still diverges (POS 30.9%,
 CIGAR 26.0%, MAPQ 39.5%, FLAG 33.8%, TLEN 43.9%). The Phase-1/2 residual notes
@@ -1093,7 +1093,7 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
   T-028's outcome (the array is needed by any of the fixes).
 
 ### T-030: Paired-end mate-aware placement selection (`mem_sam_pe` / `mem_pair`)
-- **Status:** OPEN
+- **Status:** FIXED (branch `t030-mate-aware-placement`)
 - **Severity:** high (**confirmed largest driver** by T-028: B1 41.9% of divergence,
   88.4% proper-pair-flag flips, plus the B5/B2 cascade)
 - **Affected field(s):** POS, RNAME, FLAG, TLEN, PNEXT, RNEXT, SEQ/QUAL orientation, MAPQ.
@@ -1112,6 +1112,40 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
   real competing-pair `subo`, closing the T-022 `100124` overshoot residual). Guard:
   `uniq` stays byte-identical (unique pairs have one region each, so the selection is a
   no-op there); measure `sub2k` POS/FLAG/TLEN.
+- **Resolution (implemented):** Ported bwa's `mem_pair` + the pairing block of
+  `mem_sam_pe` as pure helpers in `src/paired.rs`: `mem_pair(regions1, regions2, dist,
+  match_score, pair_margin) -> Option<PairChoice>` enumerates FR-concordant region pairs
+  (opposite strands, insert within `[low, high]`), scores each `max(0, score1 + score2 +
+  insert_bonus(d))`, and returns the best pairing's region indices plus `o`/`subo`/`n_sub`;
+  `paired_mapq` applies bwa's `q_pe = raw_mapq(o − max(subo, score_un))`, the `n_sub`
+  multi-hit penalty, `frac_rep` down-weight, and the per-mate `q_se`↔`q_pe` reconciliation
+  (`combine_se_pe`). `Aligner::region_se_mapq` (+ `pair_margin`) expose `approx_mapq_se`
+  for an arbitrary selected region. `src/main.rs` now drives `align_batch_regions`
+  (T-029), keeps each read's **near-best** regions (`score ≥ primary − PEN_UNPAIRED`,
+  bwa's `mem_matesw` candidate threshold), estimates the insert distribution from the
+  primaries, then per pair runs `mem_pair`: when the pairing score beats the unpaired
+  alternative it adopts the jointly-selected loci, recomputes both mates' MAPQ via
+  `paired_mapq`, and marks the pair proper; otherwise it keeps each read's primary. The
+  old `pair_mapq` was removed. bwa's `is_multi`→`no_pairing` guard and `mem_matesw`-for-
+  mapped rescue are deliberately omitted (deferred to T-031); the near-best filter is what
+  protects `uniq` (its weak secondaries fall below `primary − PEN_UNPAIRED`, so each uniq
+  read carries one region → `mem_pair` is a no-op picking `(0,0)` and `paired_mapq`
+  reduces to the prior `pair_mapq`).
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t030{,_summary}.md`):** **zero uniq
+  regression** — uniq SAM is byte-identical to the T-029 baseline across the full body
+  (all columns incl. tags); vs bwa-mem2 unchanged (FLAG 4, MAPQ 2, CIGAR 2, SEQ/QUAL 2,
+  rest 0). **sub2k large improvement** (T-029 → T-030 vs bwa-mem2): **FLAG 33.8% → 15.8%
+  (−718)**, POS/PNEXT 30.9% → 27.9% (−119), TLEN 43.9% → 38.1% (−230), MAPQ 39.5% → 36.7%
+  (−115), CIGAR 26.0% → 25.4% (−26), SEQ/QUAL 14.4% → 12.6% (−74), RNAME/RNEXT flat; no
+  field regressed. **Proper-pair (0x2) flags 2668 → 3780** (bwa-mem2 3962) — 95.4% of
+  bwa-mem2's proper pairs recovered, up from 67.3%, directly closing T-028 bucket **B1**.
+  Throughput/RSS unchanged (35 s, 15.71 GB). 305 lib tests pass (+13 `mem_pair`/
+  `paired_mapq`/`combine_se_pe`/`region_se_mapq`); `cargo clippy -- -D warnings` and
+  `cargo fmt --check` clean.
+- **Residual (other tickets):** the remaining FLAG/POS divergence is the B1 subset whose
+  mate-concordant locus bwa reaches only via inexact `mem_matesw` rescue of an already-
+  mapped orphan (never in bwa-rs's region array) — **T-031**; the identically-placed MAPQ
+  over-scoring is the inexact-secondary residual **T-032** (B3).
 - **Dependencies:** **T-029** (region arrays). Subsumes part of **T-022**'s residual.
 
 ### T-031: Unmapped-vs-mapped recovery on multi-mappers

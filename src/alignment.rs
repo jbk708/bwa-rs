@@ -101,6 +101,36 @@ impl Aligner {
         self.scoring.match_score
     }
 
+    /// Single-end MAPQ (bwa `mem_approx_mapq_se`) for an already-extended region, using
+    /// the per-read suboptimal score/count and repeat fraction from its [`ReadRegions`].
+    /// Recomputing it for `regions[0]` reproduces the primary's MAPQ exactly; it is used
+    /// to score a non-primary region picked by mate-aware pairing.
+    pub fn region_se_mapq(
+        &self,
+        region: &AlignmentResult,
+        sub: i32,
+        sub_n: u32,
+        frac_rep: f32,
+    ) -> u8 {
+        approx_mapq_se(
+            region.score,
+            sub,
+            sub_n,
+            aligned_span(&region.cigar),
+            &self.scoring,
+            self.min_seed_len,
+            frac_rep,
+        )
+    }
+
+    /// bwa's `mem_pair` `tmp`: the score margin for counting near-suboptimal pairings,
+    /// `max(a+b, o_del+e_del, o_ins+e_ins)`. bwa-rs uses a single gap model, so this is
+    /// `max(match+mismatch, gap_open+gap_extend)`.
+    pub fn pair_margin(&self) -> i32 {
+        (self.scoring.match_score + self.scoring.mismatch_penalty)
+            .max(self.scoring.gap_open + self.scoring.gap_extend)
+    }
+
     pub fn align_read_regions(
         &self,
         query: &[u8],
@@ -2736,5 +2766,24 @@ mod tests {
             "should have exactly 1 deleted base; got {}",
             cigar
         );
+    }
+
+    #[test]
+    fn region_se_mapq_reproduces_primary_mapq() {
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let aligner = regions_test_aligner(body);
+        let query = enc(&body[5..35]);
+
+        let ar = aligner.align_read(&query, None).unwrap();
+        let rr = aligner.align_read_regions(&query, None).unwrap();
+
+        if ar.flag & 0x4 == 0 {
+            assert!(!rr.regions.is_empty());
+            let recomputed = aligner.region_se_mapq(&rr.regions[0], rr.sub, rr.sub_n, rr.frac_rep);
+            assert_eq!(
+                recomputed, ar.mapq,
+                "region_se_mapq on primary region must reproduce align_read mapq"
+            );
+        }
     }
 }
