@@ -608,7 +608,10 @@ impl Aligner {
         let window = &forward_ref[window_start..window_end];
 
         let la = local_align(&oriented, window, &self.scoring)?;
-        if la.score < self.min_score {
+        // bwa's mem_matesw accepts a mate-rescued alignment at `opt->min_seed_len`,
+        // not `opt->T`: a concordant rescue that pairs is kept even when its solo score
+        // is below the report threshold (pair-conditioned acceptance).
+        if la.score < self.min_seed_len as i32 {
             return None;
         }
 
@@ -1648,6 +1651,46 @@ mod tests {
         let orphan = enc("ACGTACGATCGATCGGATTC");
         let dist = InsertSizeDistribution::with_params(60.0, 5.0);
         assert!(aligner.rescue_mate(&orphan, &mate, &dist).is_none());
+    }
+
+    #[test]
+    fn rescue_mate_accepts_sub_t_concordant_rescue() {
+        // Verifies that a concordant rescue scoring in [min_seed_len, min_score) is
+        // accepted after the bwa mem_matesw gate fix (pair-conditioned acceptance).
+        // With Scoring::default() match_score=1, a 25 bp exact match scores 25.
+        // min_seed_len=19 and min_score=30, so 25 >= 19 (accepted) and 25 < 30 (sub-T).
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{body}")).unwrap();
+        let ref_data = ref_seq.as_slice_2n();
+        let index = FMIndexAlias::build_2n(&ref_seq);
+        let aligner = Aligner::new(index, ref_data.clone())
+            .min_seed_len(19)
+            .min_score(30);
+        let n_fwd = body.len();
+        let fwd = &ref_data[..n_fwd];
+
+        // mate maps forward at position 0, covering 20 bp
+        let mut mate_cigar = Cigar::new();
+        mate_cigar.push(CigarOp::M, 20);
+        let mut mate = AlignmentResult::new(0, mate_cigar);
+        mate.reverse_strand = false;
+
+        // orphan is the reverse-strand read of forward region [35, 60): 25 bp exact
+        // match → score 25, which is >= min_seed_len (19) but < min_score (30).
+        let region = fwd[35..60].to_vec();
+        let orphan = reverse_complement(&region);
+
+        // upper_bound = 60 + 20 = 80, so the window [0, 60] covers position 35.
+        let dist = InsertSizeDistribution::with_params(60.0, 5.0);
+        let result = aligner
+            .rescue_mate(&orphan, &mate, &dist)
+            .expect("sub-T concordant rescue should be accepted");
+        assert!(
+            result.reverse_strand,
+            "forward mate -> reverse orphan downstream"
+        );
+        assert!(result.score >= 19, "score must be >= min_seed_len");
+        assert!(result.score < 30, "score must be < min_score (sub-T)");
     }
 
     #[test]

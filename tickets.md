@@ -959,7 +959,7 @@ regression).
 
 ---
 
-## Phase 3: multi-mapper placement & pairing (T-028, T-029, T-030 FIXED; T-031 … T-032 OPEN)
+## Phase 3: multi-mapper placement & pairing (T-028, T-029, T-030, T-031 FIXED; T-032 OPEN)
 
 After Phase 2 the `uniq` set is at parity but `sub2k` still diverges (POS 30.9%,
 CIGAR 26.0%, MAPQ 39.5%, FLAG 33.8%, TLEN 43.9%). The Phase-1/2 residual notes
@@ -1149,23 +1149,55 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 - **Dependencies:** **T-029** (region arrays). Subsumes part of **T-022**'s residual.
 
 ### T-031: Unmapped-vs-mapped recovery on multi-mappers
-- **Status:** OPEN
-- **Severity:** medium (T-028: B2 = 3.3% of divergence; likely folds into T-030's pairing/rescue)
+- **Status:** FIXED (branch `t031-unmapped-recovery`)
+- **Severity:** medium (T-028: B2 = 3.3% of divergence; folds into T-030's pairing/rescue)
 - **Affected field(s):** RNAME, POS, FLAG, RNEXT, PNEXT (records bwa-rs leaves `*`).
 - **Symptom:** Bucket **B2** — bwa-rs emits `*` where bwa-mem2 places the read
-  (`182#64`, `182#128`, `247#64`). Either the read's only acceptable locus scores
+  (`1059`, `1061#128`, `161#128`). Either the read's only acceptable locus scores
   below `-T` on its own but is rescued/accepted via the mate, or seeding surfaces no
   region at all for it.
 - **Suspected cause:** `result.score < self.min_score → unmapped` is applied per read
   with no pair context; `rescue_mate` only fires when the *other* mate already mapped,
   and mate rescue runs after independent placement rather than as part of pairing.
-- **Resolution (proposed):** Determine via T-028 whether these are (a) pair-rescue
-  cases (mate maps, orphan should be `mem_matesw`-rescued — check the existing
-  `rescue_mate` trigger/threshold) or (b) sub-`T` placements that bwa keeps because the
-  *pair* clears threshold. Fix accordingly: extend rescue to fire from the T-030
-  selected pair, and/or apply bwa's pair-conditioned acceptance. Guard `uniq` (no
-  unmapped records there) for zero regression.
-- **Dependencies:** **T-029**; likely **T-030** (pairing selects the locus to rescue toward).
+- **Investigation:** Re-bucketing the post-T-030 sub2k (`bench/bucket_t028.pl` on
+  `bench/bwars_2n_2k_t030.sam`) left **74 B2 records: 52 with a mapped mate, 22 with
+  both ends unmapped, 73/74 proper in bwa-mem2.** The 52 mapped-mate cases already
+  reached `rescue_mate` (one end unmapped) but were rejected: bwa-mem2 emits them with
+  AS scores **below `-T`** (`1059` AS:i:28/25, `1061#128` AS:i:23, `161#128` AS:i:25),
+  yet `rescue_mate` gated on `min_score` (`-T = 30`) and dropped every rescue in
+  `[19, 30)`. bwa's `mem_matesw` instead accepts a mate-SW rescue at
+  `aln.score >= opt->min_seed_len` (19), **not** `opt->T` — a concordant rescue that
+  pairs is kept even when its solo score is sub-`T` (pair-conditioned acceptance). The
+  22 both-unmapped cases have no mapped anchor for mate-SW (bwa pairs their retained
+  sub-`T` regions directly) and are out of scope here.
+- **Resolution (implemented):** `Aligner::rescue_mate` (`src/alignment.rs`) now gates
+  the local-alignment rescue on `la.score < self.min_seed_len as i32` instead of
+  `self.min_score`, matching bwa's `mem_matesw` (`aln.score >= opt->min_seed_len`). The
+  existing two-phase paired driver in `src/main.rs` is unchanged: a recovered orphan's
+  region (now accepted at score ≥ `min_seed_len`) flows into `mem_pair`, which marks the
+  pair proper and recomputes MAPQ via `paired_mapq` exactly as for any other concordant
+  pair. New unit test `rescue_mate_accepts_sub_t_concordant_rescue`.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t031{,_summary}.md`):** **zero uniq
+  regression** — uniq SAM body byte-identical to the T-030 baseline (`@PG CL:` aside);
+  vs bwa-mem2 unchanged (FLAG 4, MAPQ 2, CIGAR 2, SEQ/QUAL 2, rest 0). **sub2k B2
+  74 → 25** (`bench/compare_t031_buckets.md`): mapped primary records **3913 → 3962**
+  (bwa-mem2 3987), proper-pair flags **3780 → 3878** (bwa-mem2 3954). Per-field vs
+  bwa-mem2 (T-030 → T-031): **FLAG 15.8% → 13.9% (−76)**, POS/PNEXT 27.9% → 27.4%
+  (−20), TLEN 38.1% → 37.2% (−34), CIGAR 25.4% → 24.7% (−27), SEQ/QUAL 12.6% → 12.2%
+  (−15); RNAME/RNEXT flat; no placement field regressed. Recovered reads whose anchor
+  is correctly placed land at bwa-mem2's exact POS+CIGAR (`1501#128` `30S49M72S`@11819,
+  `161#128` `91S60M`@10064, `1090#128` `27M124S`@10266). Throughput/RSS unchanged
+  (34 s). 306 lib tests pass (+1); `cargo clippy -- -D warnings` and `cargo fmt --check`
+  clean.
+- **Residual (other tickets):** **MAPQ +28** (36.7% → 37.4%) — the newly-mapped rescues
+  are heavily-soft-clipped repetitive reads bwa grades to MAPQ 0 via an inexact second
+  locus while bwa-rs over-scores them (`sub = 0`): the **T-032 / B3** residual, not a
+  rescue defect. The **22 both-ends-unmapped** B2 records need sub-`T` regions retained
+  in `align_read_regions` for direct pairing (the single-end `-T` gate at
+  `src/alignment.rs` empties them) — deferred, overlaps **T-032**. Recovered reads that
+  follow a wrong-locus anchor are **T-028 bucket B1** (the inexact `mem_matesw`-for-
+  already-mapped-orphan path T-030/this ticket deliberately omit).
+- **Dependencies:** **T-029**, **T-030** (pairing selects the locus to rescue toward).
 
 ### T-032: Residual MAPQ over-scoring from inexact secondary loci
 - **Status:** OPEN
