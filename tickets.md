@@ -959,7 +959,7 @@ regression).
 
 ---
 
-## Phase 3: multi-mapper placement & pairing (T-028 INVESTIGATION; T-029 … T-032 OPEN)
+## Phase 3: multi-mapper placement & pairing (T-028 FIXED; T-029 … T-032 OPEN)
 
 After Phase 2 the `uniq` set is at parity but `sub2k` still diverges (POS 30.9%,
 CIGAR 26.0%, MAPQ 39.5%, FLAG 33.8%, TLEN 43.9%). The Phase-1/2 residual notes
@@ -983,7 +983,8 @@ implementation tickets (**T-029 … T-032**), which are written as hypotheses ga
 its findings. The `uniq` set remains the zero-regression gate throughout.
 
 ### T-028: Characterize & bucket the residual `sub2k` divergence (INVESTIGATION)
-- **Status:** OPEN
+- **Status:** FIXED (investigation complete, 2026-06-04) — `bench/bucket_t028.pl`,
+  `bench/compare_t028_buckets.md`
 - **Severity:** high (gates and prioritizes all of Phase 3)
 - **Affected field(s):** POS, CIGAR, FLAG, TLEN, MAPQ, RNAME (diagnosis only — no code change).
 - **Goal:** Turn the aggregate `sub2k` percentages into a per-record root-cause
@@ -1015,6 +1016,47 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
   ticket updated with the bucket sizes + the resulting priority order for T-029…T-032
   (e.g. if B1 dominates, T-029+T-030 lead; if B3 dominates, T-032 leads).
 - **Dependencies:** None (read-only analysis on existing SAMs). Gates T-029 … T-032.
+- **Findings (`bench/compare_t028_buckets.md`, T-027 sub2k, 4000 read records):**
+  1765 records are identical on the compared columns; **2235 diverge.** Bucketed
+  (each record assigned to one bucket by priority B2 → B1 → B4 → B3 → B5):
+
+  | Bucket | Meaning | Count | % of divergent | MAPQ A>B | MAPQ A<B |
+  |---|---|---|---|---|---|
+  | **B1** | different-locus placement | **936** | **41.9%** | 334 | 83 |
+  | B3 | MAPQ-only (placement identical) | 793 | 35.5% | 733 | 60 |
+  | B4 | same-locus ≤100 bp shift / soft-clip boundary | 395 | 17.7% | 305 | 44 |
+  | B2 | unmapped-vs-mapped | 74 | 3.3% | 0 | 23 |
+  | B5 | FLAG/PNEXT-only at identical placement | 37 | 1.7% | 0 | 0 |
+
+  **The mate-disambiguation hypothesis is confirmed.** Of the 936 B1 records,
+  **827 (88.4%) are proper-pair-flag flips — bwa-mem2 marks the pair proper (0x2)
+  and bwa-rs does not** — i.e. bwa places the read at the mate-concordant locus and
+  bwa-rs at a discordant equal-scoring copy. RNAME never differs (single contig);
+  537 B1 records flip strand, 399 are same-strand >100 bp away. B5 (37) is the
+  downstream cascade: same POS/CIGAR/MAPQ as bwa-mem2 but a different proper-pair
+  FLAG / PNEXT because the *mate* is a B1 record. B2 (74) is the same root cause at
+  the extreme — bwa pairs/rescues the read to a locus bwa-rs leaves unmapped.
+  → **B1 + B5 + B2 ≈ 47% of the divergence is the single mate-aware-placement gap.**
+
+  **B3 (35.5%, 733 over-scoring) is the inexact-secondary MAPQ residual** — identical
+  placement, bwa-rs MAPQ far higher (e.g. `100#64` 80M71S MAPQ 54 vs 5) because bwa's
+  inexact second-best locus gives `sub > 0` while bwa-rs's seeding yields `sub = 0`.
+  Pure MAPQ; no placement move. **B4 (17.7%)** is a mix: the pair shifts together by
+  tens of bp (e.g. `1#64` POS 10043 vs 9999, same CIGAR shape) with MAPQ also
+  over-scored — part will resolve with mate-aware placement, the rest is the T-026
+  extension-fidelity tail. MAPQ over-scoring totals 334 (B1) + 733 (B3) + 305 (B4)
+  = **1372 records ≈ the 39.5% aggregate MAPQ divergence**, so fixing placement
+  (T-030) also reclaims the 334 + ~305 placement-driven over-scores, leaving B3 as the
+  standalone MAPQ work.
+- **Resulting priority for Phase 3 (evidence-based):**
+  1. **T-029 → T-030 (mate-aware placement)** — *highest*. Directly closes B1 (41.9%),
+     cascades into B5 (1.7%) and most of B2 (3.3%), and reclaims ~640 placement-driven
+     MAPQ over-scores. The 88.4% proper-flip rate makes this the dominant lever.
+  2. **T-032 (inexact-secondary MAPQ)** — *second*. B3 (35.5%, 733 over-scores); pure
+     MAPQ, independent of placement, the largest standalone MAPQ contributor.
+  3. **T-031 (unmapped recovery)** — B2 (3.3%); likely folds into T-030's pairing/rescue.
+  4. **B4 residual** — re-measure after T-030; the remainder is T-026-class extension
+     fidelity, not a new ticket yet.
 
 ### T-029: Expose the per-read candidate-region array (`mem_alnreg_v`)
 - **Status:** OPEN
@@ -1039,7 +1081,8 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 
 ### T-030: Paired-end mate-aware placement selection (`mem_sam_pe` / `mem_pair`)
 - **Status:** OPEN
-- **Severity:** high (expected largest remaining POS/FLAG/TLEN driver — pending T-028)
+- **Severity:** high (**confirmed largest driver** by T-028: B1 41.9% of divergence,
+  88.4% proper-pair-flag flips, plus the B5/B2 cascade)
 - **Affected field(s):** POS, RNAME, FLAG, TLEN, PNEXT, RNEXT, SEQ/QUAL orientation, MAPQ.
 - **Symptom:** Bucket **B1** — on multi-mappers bwa-rs picks a per-read max-score
   locus that need not be the one pairing concordantly with the mate; bwa-mem2 picks
@@ -1060,7 +1103,7 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 
 ### T-031: Unmapped-vs-mapped recovery on multi-mappers
 - **Status:** OPEN
-- **Severity:** medium (pending T-028 bucket size)
+- **Severity:** medium (T-028: B2 = 3.3% of divergence; likely folds into T-030's pairing/rescue)
 - **Affected field(s):** RNAME, POS, FLAG, RNEXT, PNEXT (records bwa-rs leaves `*`).
 - **Symptom:** Bucket **B2** — bwa-rs emits `*` where bwa-mem2 places the read
   (`182#64`, `182#128`, `247#64`). Either the read's only acceptable locus scores
@@ -1079,7 +1122,8 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 
 ### T-032: Residual MAPQ over-scoring from inexact secondary loci
 - **Status:** OPEN
-- **Severity:** medium (the T-024/T-027 residual, re-measured after T-029…T-031)
+- **Severity:** high (**confirmed second driver** by T-028: B3 = 35.5% of divergence,
+  733 MAPQ over-scores; the largest standalone MAPQ contributor)
 - **Affected field(s):** MAPQ, XS.
 - **Symptom:** Bucket **B3** — POS+CIGAR agree but bwa-rs MAPQ is too high because the
   second-best locus is *inexact* (bwa DP-extends a short shared seed across
