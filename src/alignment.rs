@@ -11,6 +11,21 @@ use crate::types::{AlignmentResult, ChainedSeed, Cigar, CigarOp, MEM};
 
 pub const DEFAULT_MIN_SCORE: i32 = 30;
 
+/// The per-read candidate alignment regions (bwa `mem_alnreg_v`). `regions[0]` is
+/// the chosen primary (max extended score, baseline winning ties) carrying the
+/// final mapq/xs/frac_rep exactly as `align_read` returns; the remaining entries are
+/// the other candidate placements, sorted by score descending and deduplicated by
+/// (position, strand). `regions` is empty when the read is unmapped / below min_score.
+#[derive(Clone, Debug)]
+pub struct ReadRegions {
+    pub regions: Vec<AlignmentResult>,
+    /// bwa `sub` — best secondary score feeding MAPQ/XS (0 if none).
+    pub sub: i32,
+    /// bwa `sub_n` — count of secondaries tied at `sub`.
+    pub sub_n: u32,
+    pub frac_rep: f32,
+}
+
 // Cap on the number of candidate MEMs extended to derive the suboptimal score
 // for MAPQ; keeps the cost bounded on repetitive reads. The longest MEMs are
 // kept, as they anchor the most reliable placements.
@@ -86,16 +101,21 @@ impl Aligner {
         self.scoring.match_score
     }
 
-    pub fn align_read(
+    pub fn align_read_regions(
         &self,
         query: &[u8],
         _mate: Option<&[u8]>,
-    ) -> Result<AlignmentResult, BwaError> {
+    ) -> Result<ReadRegions, BwaError> {
         let (raw_mems, frac_rep) =
             find_mems_with_frac_rep(&self.index, query, self.min_seed_len, DEFAULT_MAX_OCC);
 
         if raw_mems.is_empty() {
-            return Ok(self.unmapped_result());
+            return Ok(ReadRegions {
+                regions: Vec::new(),
+                sub: 0,
+                sub_n: 0,
+                frac_rep,
+            });
         }
 
         // Baseline placement: the highest-scoring filtered/chained SMEM, exactly as
@@ -106,13 +126,23 @@ impl Aligner {
         filter_mems(&mut mems);
 
         if mems.is_empty() {
-            return Ok(self.unmapped_result());
+            return Ok(ReadRegions {
+                regions: Vec::new(),
+                sub: 0,
+                sub_n: 0,
+                frac_rep,
+            });
         }
 
         let chains = chain_seeds(&mems, 50.0);
 
         if chains.is_empty() {
-            return Ok(self.unmapped_result());
+            return Ok(ReadRegions {
+                regions: Vec::new(),
+                sub: 0,
+                sub_n: 0,
+                frac_rep,
+            });
         }
 
         let best_chain = chains
@@ -183,7 +213,12 @@ impl Aligner {
         // bwa's -T: alignments scoring below the threshold are reported unmapped
         // rather than placing a low-quality partial hit.
         if result.score < self.min_score {
-            return Ok(self.unmapped_result());
+            return Ok(ReadRegions {
+                regions: Vec::new(),
+                sub: 0,
+                sub_n: 0,
+                frac_rep,
+            });
         }
 
         // Suboptimal alignment score for MAPQ (bwa's `sub`/`sub_n`). The primary is now
@@ -247,7 +282,41 @@ impl Aligner {
         result.xs = sub;
         result.frac_rep = frac_rep;
 
-        Ok(result)
+        // Region array: chosen primary first, then the remaining candidate placements
+        // sorted by score descending and deduped by (position, strand). align_read
+        // returns regions[0], so this assembly cannot change existing output.
+        let mut regions = Vec::with_capacity(placements.len());
+        let mut seen: Vec<(usize, bool)> = vec![(result.position, result.reverse_strand)];
+        regions.push(result);
+        let mut rest: Vec<AlignmentResult> = placements;
+        rest.sort_by_key(|p| std::cmp::Reverse(p.score));
+        for p in rest {
+            let key = (p.position, p.reverse_strand);
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            regions.push(p);
+        }
+        Ok(ReadRegions {
+            regions,
+            sub,
+            sub_n,
+            frac_rep,
+        })
+    }
+
+    pub fn align_read(
+        &self,
+        query: &[u8],
+        mate: Option<&[u8]>,
+    ) -> Result<AlignmentResult, BwaError> {
+        let rr = self.align_read_regions(query, mate)?;
+        Ok(rr
+            .regions
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| self.unmapped_result()))
     }
 
     fn build_alignment(
@@ -2408,6 +2477,74 @@ mod tests {
             result.score >= 30,
             "locus-B extended score {} must be >= 30",
             result.score
+        );
+    }
+
+    // ---- T-029: align_read_regions unit tests ----
+
+    /// Helper to build a 2N-indexed aligner for a given reference body string.
+    fn regions_test_aligner(body: &str) -> Aligner {
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{body}")).unwrap();
+        let ref_data = ref_seq.as_slice_2n();
+        let index = FMIndexAlias::build_2n(&ref_seq);
+        Aligner::new(index, ref_data).min_seed_len(10).min_score(10)
+    }
+
+    #[test]
+    fn align_read_regions_primary_matches_align_read() {
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let aligner = regions_test_aligner(body);
+        let query = enc(&body[5..35]);
+
+        let ar = aligner.align_read(&query, None).unwrap();
+        let rr = aligner.align_read_regions(&query, None).unwrap();
+
+        // If it mapped, regions[0] must equal align_read on all key fields.
+        if ar.flag & 0x4 == 0 {
+            assert!(
+                !rr.regions.is_empty(),
+                "align_read_regions must have at least one region for a mapped read"
+            );
+            let primary = &rr.regions[0];
+            assert_eq!(primary.position, ar.position, "position mismatch");
+            assert_eq!(primary.score, ar.score, "score mismatch");
+            assert_eq!(
+                primary.cigar.to_string(),
+                ar.cigar.to_string(),
+                "cigar mismatch"
+            );
+            assert_eq!(primary.mapq, ar.mapq, "mapq mismatch");
+            assert_eq!(
+                primary.reverse_strand, ar.reverse_strand,
+                "reverse_strand mismatch"
+            );
+            assert_eq!(primary.xs, ar.xs, "xs mismatch");
+        }
+    }
+
+    #[test]
+    fn align_read_regions_unmapped_is_empty() {
+        // min_seed_len=100 prevents any seed from being found → unmapped.
+        let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
+        let ref_seq = Reference::parse_fasta(&format!(">t\n{body}")).unwrap();
+        let ref_data = ref_seq.as_slice_2n();
+        let index = FMIndexAlias::build_2n(&ref_seq);
+        let aligner = Aligner::new(index, ref_data)
+            .min_seed_len(100)
+            .min_score(10);
+
+        let query = enc(&body[5..35]);
+        let rr = aligner.align_read_regions(&query, None).unwrap();
+        assert!(
+            rr.regions.is_empty(),
+            "unmapped read must yield empty regions"
+        );
+
+        let ar = aligner.align_read(&query, None).unwrap();
+        assert_eq!(
+            ar.flag & 0x4,
+            0x4,
+            "align_read must return unmapped flag when regions is empty"
         );
     }
 

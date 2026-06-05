@@ -49,7 +49,7 @@ pub mod simd_sw;
 pub mod types;
 pub mod utils;
 
-pub use alignment::Aligner;
+pub use alignment::{Aligner, ReadRegions};
 pub use compact::{BitPackedBWT, CompactOccTable, StreamingFMIndex, StreamingFMIndexBuilder};
 pub use error::BwaError;
 pub use fm_index::FMIndex;
