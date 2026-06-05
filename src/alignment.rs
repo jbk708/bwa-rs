@@ -255,7 +255,15 @@ impl Aligner {
         // the maximal-scoring region, so a candidate at a distinct reference locus that
         // overlaps the primary in query space is a genuine secondary; no guard against
         // candidates outscoring the primary is needed (none can).
-        let pspan = query_span(&result.cigar);
+        //
+        // Query spans are normalized to forward-read coordinates (bwa stores
+        // `mem_alnreg_t.qb/qe` in the read's own orientation, not the reference's). A
+        // reverse-strand placement's CIGAR is reference-forward, so its soft-clips are
+        // mirrored relative to the sequenced read; without this normalization the
+        // primary and an equal-scoring opposite-strand copy of the same read region
+        // appear to occupy disjoint query spans and the secondary is missed.
+        let qlen = query.len();
+        let pspan = forward_query_span(&result.cigar, result.reverse_strand, qlen);
         let primary_len = pspan.1.saturating_sub(pspan.0);
         let primary_pos = result.position;
         let primary_ref_end = primary_pos + result.cigar.reference_length();
@@ -264,12 +272,13 @@ impl Aligner {
         // Best score per distinct secondary placement, keyed by (position, strand).
         let mut secondaries: Vec<(usize, bool, i32)> = Vec::new();
         for alt_res in &placements {
+            let cspan = forward_query_span(&alt_res.cigar, alt_res.reverse_strand, qlen);
+
             // A placement contained in the primary in BOTH query and reference
             // (same strand) is the primary alignment re-derived from one of its own
             // seeds — bwa's mem_sort_dedup_patch containment rule — so it is not a
             // secondary. This also excludes the chosen primary itself.
             let alt_ref_end = alt_res.position + alt_res.cigar.reference_length();
-            let cspan = query_span(&alt_res.cigar);
             let query_contained = cspan.0 >= pspan.0 && cspan.1 <= pspan.1;
             let ref_contained = alt_res.position >= primary_pos && alt_ref_end <= primary_ref_end;
             if alt_res.reverse_strand == primary_reverse && query_contained && ref_contained {
@@ -1039,6 +1048,19 @@ fn query_span(cigar: &Cigar) -> (usize, usize) {
         .map(|(_, len)| *len as usize)
         .sum();
     (leading_clip, leading_clip + aligned_q)
+}
+
+/// [`query_span`] expressed in forward-read coordinates. A reverse-strand placement's
+/// CIGAR is written reference-forward, so its aligned span sits at the mirror position
+/// in the sequenced read; bwa keeps region query bounds (`mem_alnreg_t.qb/qe`) in that
+/// read frame so primary/secondary overlap is comparable across strands.
+fn forward_query_span(cigar: &Cigar, reverse_strand: bool, query_len: usize) -> (usize, usize) {
+    let (qs, qe) = query_span(cigar);
+    if reverse_strand {
+        (query_len.saturating_sub(qe), query_len.saturating_sub(qs))
+    } else {
+        (qs, qe)
+    }
 }
 
 /// bwa's alignment length `l = max(query span, reference span)` over the aligned core
@@ -2644,6 +2666,20 @@ mod tests {
         let (s, e) = query_span(&c);
         assert_eq!(s, 0);
         assert_eq!(e, 20);
+    }
+
+    /// A forward placement's span is unchanged; the reverse-strand mirror of the same
+    /// aligned core lands on the same forward-read interval, so overlap is comparable.
+    #[test]
+    fn forward_query_span_mirrors_reverse_strand() {
+        // 99S 52M at the read's reference-forward orientation.
+        let c = make_cigar(&[(CigarOp::S, 99), (CigarOp::M, 52)]);
+        assert_eq!(forward_query_span(&c, false, 151), (99, 151));
+        // On the reverse strand the same CIGAR aligns the first 52 read bases.
+        assert_eq!(forward_query_span(&c, true, 151), (0, 52));
+        // Which now overlaps a forward 52M 99S placement of the opposite-strand copy.
+        let d = make_cigar(&[(CigarOp::M, 52), (CigarOp::S, 99)]);
+        assert_eq!(forward_query_span(&d, false, 151), (0, 52));
     }
 
     // ---- T-026: ksw_extend + ksw_global unit tests ----
