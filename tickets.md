@@ -959,7 +959,7 @@ regression).
 
 ---
 
-## Phase 3: multi-mapper placement & pairing (T-028, T-029, T-030, T-031 FIXED; T-032 OPEN)
+## Phase 3: multi-mapper placement & pairing (T-028 … T-032 FIXED)
 
 After Phase 2 the `uniq` set is at parity but `sub2k` still diverges (POS 30.9%,
 CIGAR 26.0%, MAPQ 39.5%, FLAG 33.8%, TLEN 43.9%). The Phase-1/2 residual notes
@@ -1200,7 +1200,9 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 - **Dependencies:** **T-029**, **T-030** (pairing selects the locus to rescue toward).
 
 ### T-032: Residual MAPQ over-scoring from inexact secondary loci
-- **Status:** OPEN
+- **Status:** FIXED (branch `t032-strand-normalized-sub`) — strand-normalized
+  secondary detection; the residual inexact *same-strand* secondary seeding is a
+  follow-up.
 - **Severity:** high (**confirmed second driver** by T-028: B3 = 35.5% of divergence,
   733 MAPQ over-scores; the largest standalone MAPQ contributor)
 - **Affected field(s):** MAPQ, XS.
@@ -1212,10 +1214,46 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
 - **Suspected cause:** The candidate set fed to `sub`/XS still misses inexact
   second-best alignments; `collect_short_seeds` (third round) catches some but not the
   cross-mismatch/indel loci bwa reaches by extension.
-- **Resolution (proposed):** Re-measure after T-029…T-031 (mate-aware placement may
-  already supply the competing locus via the pair). If a gap remains, widen secondary
-  discovery toward bwa's region set — e.g. extend more sub-optimal chains / seed the
-  primary's flanks against repeat copies — feeding `sub`. Guard `uniq`; target the
-  identically-placed-read MAPQ exact-match rate on `sub2k`.
-- **Dependencies:** **T-029**; re-scoped by **T-028** and the T-030/T-031 outcome
-  (may shrink or close before standalone work is needed).
+- **Investigation (re-measure on post-T-031 master):** B3 was still 748 records
+  (36.8% of divergence), 600 over-scorers — mate-aware placement (T-030/T-031) did
+  **not** close it. An env-gated dump of the per-read candidate `placements` over the
+  243 biggest over-scorers (dMAPQ ≥ 40, identical placement — all `~40M~110S` heavily
+  soft-clipped, MAPQ 60 vs bwa 0) showed the **dominant** `sub = 0` cause was *not*
+  missing inexact seeding but a coordinate bug: the secondary was present in the
+  candidate set at an **equal score on the opposite strand**, yet was never counted.
+  bwa-rs computed the primary/secondary query overlap from `query_span(cigar)`, which
+  is **reference-forward**; a reverse-strand placement's soft-clips are mirrored
+  relative to the sequenced read, so the primary (`99S52M` reverse) and its
+  equal-scoring opposite-strand copy (`52M99S` forward) appeared to occupy disjoint
+  query spans (`99..151` vs `0..52`) and `mem_mark_primary_se`'s `MASK_LEVEL` test
+  never fired → `sub = 0` → MAPQ 60.
+- **Resolution (implemented):** `align_read_regions` (`src/alignment.rs`) now
+  normalizes every placement's query span to **forward-read coordinates** — bwa stores
+  region bounds (`mem_alnreg_t.qb/qe`) in the read's own orientation — via a new
+  `forward_query_span(cigar, reverse_strand, query_len)` helper (reverse-strand:
+  `[qs,qe] → [len−qe, len−qs]`) before the containment / `MASK_LEVEL` overlap test that
+  derives `sub`/`sub_n`. Primary selection is still the max-extended-score region, so
+  **placement is byte-for-byte unchanged**; only the suboptimal score feeding
+  `approx_mapq_se` (and the `XS` tag) moves. New unit test
+  `forward_query_span_mirrors_reverse_strand`.
+- **Measured (chr1, `-k 19 -t 16`, `bench/compare_t032{,_summary}.md`,
+  `bench/compare_t032_buckets.md`):** **zero uniq regression** — uniq SAM cols 1–10
+  byte-identical to the T-031 baseline; vs bwa-mem2 unchanged (FLAG 4, MAPQ 2, CIGAR 2,
+  SEQ/QUAL 2, rest 0); one record's spurious `XS:i:19 → 0` (toward bwa-mem2).
+  **sub2k: placement frozen, MAPQ-only improvement** — every field except MAPQ is
+  byte-for-byte the T-031 result; **MAPQ 1495 (37.4%) → 1377 (34.4%), −118.** Bucket
+  shift: divergent **2035 → 1997 (−38)**, identical (B0) **1965 → 2003 (+38)**, **B3
+  748 → 709** (over-scorers **600 → 529, −71**); placement-driven over-scores also fall
+  (B1 over 327 → 263, B4 over 233 → 206). Identically-placed MAPQ exact-match
+  **72.4% → 73.8%**, mean abs(dMAPQ) **7.98 → 5.07**. Throughput/RSS unchanged (~34 s).
+  307 lib tests pass (+1); `cargo clippy -- -D warnings` and `cargo fmt --check` clean.
+- **Residual (other root causes — follow-up):** **529 B3 over-scorers remain** — the
+  genuinely *inexact same-strand* second-best loci bwa reaches by DP-extending a short
+  shared seed across mismatches/indels, which exact-MEM + `collect_short_seeds` seeding
+  never surfaces (`sub = 0`). This is the original T-032 hypothesis narrowed to the
+  cross-mismatch case; closing it needs richer approximate-secondary seeding (seed the
+  primary's flanks against repeat copies / extend more sub-optimal chains). Under-scoring
+  ticks up 148 → 180 (a small over-correction where the normalized overlap counts an
+  opposite-strand secondary bwa grades marginally higher; net strongly positive).
+- **Dependencies:** **T-029** (region arrays); re-scoped by **T-028** and the
+  T-030/T-031 outcome.
