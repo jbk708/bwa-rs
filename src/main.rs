@@ -107,6 +107,7 @@ struct ReadAln {
     sub: i32,
     sub_n: u32,
     frac_rep: f32,
+    csub: i32,
 }
 
 struct RawRead {
@@ -162,6 +163,7 @@ fn paired_read_aln(raw: RawRead, rr: ReadRegions) -> ReadAln {
         sub: rr.sub,
         sub_n: rr.sub_n,
         frac_rep: rr.frac_rep,
+        csub: rr.csub,
     }
 }
 
@@ -331,12 +333,14 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
                                 read1.sub,
                                 read1.sub_n,
                                 read1.frac_rep,
+                                read1.csub,
                             );
                             let q_se2 = aligner.region_se_mapq(
                                 &place2,
                                 read2.sub,
                                 read2.sub_n,
                                 read2.frac_rep,
+                                read2.csub,
                             );
                             let (m1, m2) = paired_mapq(
                                 &choice,
@@ -346,6 +350,10 @@ fn run_mem(args: MemArgs) -> Result<(), BwaError> {
                                 read1.frac_rep,
                                 read2.frac_rep,
                                 aligner.match_score(),
+                                read1.csub,
+                                read2.csub,
+                                place1.score,
+                                place2.score,
                             );
                             place1.mapq = m1;
                             place2.mapq = m2;

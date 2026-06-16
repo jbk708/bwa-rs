@@ -24,6 +24,10 @@ pub struct ReadRegions {
     /// bwa `sub_n` — count of secondaries tied at `sub`.
     pub sub_n: u32,
     pub frac_rep: f32,
+    /// bwa `csub` — best score among candidate regions that overlap the primary's
+    /// reference span (tandem hit). `sub` is lower-bounded by this before the MAPQ
+    /// formula: `effective_sub = max(sub, csub)`. 0 when no overlapping candidate.
+    pub csub: i32,
 }
 
 // Cap on the number of candidate MEMs extended to derive the suboptimal score
@@ -102,15 +106,17 @@ impl Aligner {
     }
 
     /// Single-end MAPQ (bwa `mem_approx_mapq_se`) for an already-extended region, using
-    /// the per-read suboptimal score/count and repeat fraction from its [`ReadRegions`].
-    /// Recomputing it for `regions[0]` reproduces the primary's MAPQ exactly; it is used
-    /// to score a non-primary region picked by mate-aware pairing.
+    /// the per-read suboptimal score/count, repeat fraction, and tandem-hit score from
+    /// its [`ReadRegions`]. Recomputing it for `regions[0]` reproduces the primary's
+    /// MAPQ exactly; it is used to score a non-primary region picked by mate-aware
+    /// pairing.
     pub fn region_se_mapq(
         &self,
         region: &AlignmentResult,
         sub: i32,
         sub_n: u32,
         frac_rep: f32,
+        csub: i32,
     ) -> u8 {
         approx_mapq_se(
             region.score,
@@ -120,6 +126,7 @@ impl Aligner {
             &self.scoring,
             self.min_seed_len,
             frac_rep,
+            csub,
         )
     }
 
@@ -145,6 +152,7 @@ impl Aligner {
                 sub: 0,
                 sub_n: 0,
                 frac_rep,
+                csub: 0,
             });
         }
 
@@ -161,6 +169,7 @@ impl Aligner {
                 sub: 0,
                 sub_n: 0,
                 frac_rep,
+                csub: 0,
             });
         }
 
@@ -172,6 +181,7 @@ impl Aligner {
                 sub: 0,
                 sub_n: 0,
                 frac_rep,
+                csub: 0,
             });
         }
 
@@ -248,6 +258,7 @@ impl Aligner {
                 sub: 0,
                 sub_n: 0,
                 frac_rep,
+                csub: 0,
             });
         }
 
@@ -308,6 +319,30 @@ impl Aligner {
             0
         };
 
+        // csub (bwa `mem_alnreg_t.csub`, "SW score of a tandem hit"): best score among
+        // candidate placements that overlap the primary in **reference** space but are not
+        // primary re-derivations.  bwa's mem_approx_mapq_se lower-bounds `sub` by csub
+        // before the MAPQ formula (`sub = csub > sub ? csub : sub`), capturing
+        // near-tied overlapping alignments that the query-overlap secondary scan misses.
+        //
+        // Exclusion: mirror the containment guard used for `sub` — same strand AND
+        // query-contained AND reference-contained are primary re-derivations and are
+        // excluded from both sub and csub.
+        let mut csub = 0i32;
+        for alt_res in &placements {
+            let cspan = forward_query_span(&alt_res.cigar, alt_res.reverse_strand, qlen);
+            let alt_ref_end = alt_res.position + alt_res.cigar.reference_length();
+            let query_contained = cspan.0 >= pspan.0 && cspan.1 <= pspan.1;
+            let ref_contained = alt_res.position >= primary_pos && alt_ref_end <= primary_ref_end;
+            if alt_res.reverse_strand == primary_reverse && query_contained && ref_contained {
+                continue; // primary re-derivation — same exclusion as for sub
+            }
+            // Reference-span overlap: [alt_pos, alt_ref_end) ∩ [primary_pos, primary_ref_end)
+            if alt_res.position < primary_ref_end && alt_ref_end > primary_pos {
+                csub = csub.max(alt_res.score);
+            }
+        }
+
         result.mapq = approx_mapq_se(
             result.score,
             sub,
@@ -316,6 +351,7 @@ impl Aligner {
             &self.scoring,
             self.min_seed_len,
             frac_rep,
+            csub,
         );
 
         result.xs = sub;
@@ -342,6 +378,7 @@ impl Aligner {
             sub,
             sub_n,
             frac_rep,
+            csub,
         })
     }
 
@@ -644,7 +681,16 @@ impl Aligner {
         result.reverse_strand = rescued_reverse;
         result.score = la.score;
         result.nm = nm;
-        result.mapq = approx_mapq_se(la.score, 0, 0, span, &self.scoring, self.min_seed_len, 0.0);
+        result.mapq = approx_mapq_se(
+            la.score,
+            0,
+            0,
+            span,
+            &self.scoring,
+            self.min_seed_len,
+            0.0,
+            0,
+        );
         result.md_tag = Some(md_tag);
         Some(result)
     }
@@ -987,10 +1033,12 @@ pub fn local_align(query: &[u8], window: &[u8], scoring: &Scoring) -> Option<Loc
 /// Port of bwa's `mem_approx_mapq_se`. `score` is the alignment score, `sub` the best
 /// suboptimal *alignment* score (0 when none — the bwa `min_seed_len * a` baseline is
 /// applied here), `sub_n` the number of comparable suboptimal hits, `aligned_len`
-/// the aligned span `l = max(query_core, ref_core)`, and `frac_rep` the fraction of
+/// the aligned span `l = max(query_core, ref_core)`, `frac_rep` the fraction of
 /// the read covered by repetitive seeds (bwa's final `mapq *= 1 - frac_rep`
-/// down-weighting). bwa-mem2 defaults drive the `mapQ_coef_len = 50` branch; `csub`
-/// is not modeled (treated as 0).
+/// down-weighting), and `csub` the tandem-hit score (best reference-overlapping
+/// candidate, bwa `mem_alnreg_t.csub`). bwa-mem2 defaults drive the
+/// `mapQ_coef_len = 50` branch.
+#[allow(clippy::too_many_arguments)]
 fn approx_mapq_se(
     score: i32,
     sub: i32,
@@ -999,16 +1047,20 @@ fn approx_mapq_se(
     scoring: &Scoring,
     min_seed_len: usize,
     frac_rep: f32,
+    csub: i32,
 ) -> u8 {
     const MAPQ_COEF_LEN: i32 = 50;
     let a = scoring.match_score;
     let b = scoring.mismatch_penalty;
 
+    // bwa: sub = a->sub ? a->sub : opt->min_seed_len * opt->a
+    //      sub = a->csub > sub ? a->csub : sub
     let sub = if sub > 0 {
         sub
     } else {
         min_seed_len as i32 * a
     };
+    let sub = sub.max(csub);
     if sub >= score || score == 0 || aligned_len <= 0 {
         return 0;
     }
@@ -2290,18 +2342,18 @@ mod tests {
         // l=151 >= 50, identity = 1 - (151*1 - 151)/5/151 = 1.0
         // coef_fac = ln(50), tmp = ln(50)/ln(151) * 1.0 * 1.0 ≈ 0.8054
         // mapq = (6.02 * 132/1 * 0.8054^2 * 0.8054^2 + 0.499) ≈ very large → clamps to 60
-        let result = approx_mapq_se(151, 0, 0, 151, &Scoring::default(), 19, 0.0);
+        let result = approx_mapq_se(151, 0, 0, 151, &Scoring::default(), 19, 0.0, 0);
         assert_eq!(result, 60);
     }
 
     #[test]
     fn approx_mapq_se_sub_ge_score_is_zero() {
         assert_eq!(
-            approx_mapq_se(100, 100, 0, 100, &Scoring::default(), 19, 0.0),
+            approx_mapq_se(100, 100, 0, 100, &Scoring::default(), 19, 0.0, 0),
             0
         );
         assert_eq!(
-            approx_mapq_se(100, 120, 0, 100, &Scoring::default(), 19, 0.0),
+            approx_mapq_se(100, 120, 0, 100, &Scoring::default(), 19, 0.0, 0),
             0
         );
     }
@@ -2309,7 +2361,7 @@ mod tests {
     #[test]
     fn approx_mapq_se_zero_score_is_zero() {
         assert_eq!(
-            approx_mapq_se(0, 0, 0, 100, &Scoring::default(), 19, 0.0),
+            approx_mapq_se(0, 0, 0, 100, &Scoring::default(), 19, 0.0, 0),
             0
         );
     }
@@ -2326,8 +2378,8 @@ mod tests {
         //                   = (4.343 * 1.60944 + 0.499) as i32
         //                   = (6.990 + 0.499) as i32 = 7
         // mapq4 = 55 - 7 = 48
-        let m0 = approx_mapq_se(40, 30, 0, 45, &Scoring::default(), 19, 0.0);
-        let m4 = approx_mapq_se(40, 30, 4, 45, &Scoring::default(), 19, 0.0);
+        let m0 = approx_mapq_se(40, 30, 0, 45, &Scoring::default(), 19, 0.0, 0);
+        let m4 = approx_mapq_se(40, 30, 4, 45, &Scoring::default(), 19, 0.0, 0);
         assert_eq!(m0, 55);
         assert_eq!(m4, 48);
         assert!(m4 < m0);
@@ -2336,7 +2388,7 @@ mod tests {
     #[test]
     fn approx_mapq_se_clamps_to_60() {
         // A perfect long read with no suboptimal hits: must clamp to exactly 60.
-        let result = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 0.0);
+        let result = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 0.0, 0);
         assert_eq!(result, 60);
     }
 
@@ -2344,8 +2396,8 @@ mod tests {
     fn approx_mapq_se_frac_rep_downweights() {
         // bwa's final mapq *= (1 - frac_rep): a fully-repetitive read drops to 0,
         // half-repetitive roughly halves the unweighted score.
-        let full = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 1.0);
-        let half = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 0.5);
+        let full = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 1.0, 0);
+        let half = approx_mapq_se(200, 0, 0, 200, &Scoring::default(), 19, 0.5, 0);
         assert_eq!(full, 0);
         assert_eq!(half, 30);
     }
@@ -2847,6 +2899,75 @@ mod tests {
         );
     }
 
+    /// csub: a reference-overlapping placement that does NOT have sufficient query
+    /// overlap to be a secondary (so it is absent from `sub`) should still raise
+    /// the effective sub via csub, lowering MAPQ.
+    ///
+    /// Layout (all forward strand):
+    ///   Primary:    ref[10..60]  score=50  (query[0..50])
+    ///   Secondary:  ref[80..130] score=30  (query[0..50], disjoint ref → in sub)
+    ///   Tandem hit: ref[20..70]  score=45  (query[60..110], no query overlap with
+    ///               primary[0..50], so it is NOT a secondary; but it overlaps
+    ///               primary in reference → csub=45)
+    ///
+    /// Expected: approx_mapq_se with sub=30, csub=0 > approx_mapq_se with csub=45.
+    #[test]
+    fn approx_mapq_se_csub_lowers_mapq() {
+        let scoring = Scoring::default();
+        let min_seed_len = 19;
+
+        // Without csub: sub=30
+        let mapq_no_csub = approx_mapq_se(50, 30, 0, 50, &scoring, min_seed_len, 0.0, 0);
+        // With csub=45: effective sub = max(30, 45) = 45 → smaller score gap → lower MAPQ
+        let mapq_with_csub = approx_mapq_se(50, 30, 0, 50, &scoring, min_seed_len, 0.0, 45);
+        assert!(
+            mapq_with_csub < mapq_no_csub,
+            "csub=45 should lower MAPQ: no_csub={mapq_no_csub} vs csub={mapq_with_csub}"
+        );
+    }
+
+    /// csub >= score: MAPQ must be 0 (same as sub >= score).
+    #[test]
+    fn approx_mapq_se_csub_ge_score_gives_zero() {
+        let scoring = Scoring::default();
+        let mapq = approx_mapq_se(50, 30, 0, 50, &scoring, 19, 0.0, 50);
+        assert_eq!(mapq, 0, "csub >= score must yield MAPQ 0");
+    }
+
+    /// Paired csub clamp: when both reads have AS=XS (sub >= score → SE MAPQ 0)
+    /// the paired MAPQ must be clamped to 0 by raw_mapq(score − csub) when csub = score.
+    #[test]
+    fn paired_csub_clamp_as_eq_xs_gives_zero() {
+        use crate::paired::{mem_pair, paired_mapq, InsertSizeDistribution, PEN_UNPAIRED};
+        use crate::types::CigarOp;
+        let make_read = |pos: usize, rev: bool, sc: i32| {
+            let mut cigar = Cigar::new();
+            cigar.push(CigarOp::M, 150);
+            let mut r = AlignmentResult::new(pos, cigar);
+            r.reverse_strand = rev;
+            r.score = sc;
+            r.mapq = 0;
+            r
+        };
+        let dist = InsertSizeDistribution::with_params(300.0, 30.0);
+        // Both reads score 100; SE MAPQ is already 0 because sub=100 >= score=100.
+        // Paired score might still give q_pe > 0.
+        let r1 = make_read(100, false, 100);
+        let r2 = make_read(350, true, 100);
+        let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
+        let score_un = r1.score + r2.score - PEN_UNPAIRED;
+        // csub = score for both reads → raw_mapq(score-csub) = raw_mapq(0) = 0 → clamp to 0
+        let (m1, m2) = paired_mapq(
+            &choice, score_un, 0, // q_se1 = 0 (AS=XS)
+            0, // q_se2 = 0
+            0.0, 0.0, 1, r1.score, // csub1 = score → clamp to 0
+            r2.score, // csub2 = score → clamp to 0
+            r1.score, r2.score,
+        );
+        assert_eq!(m1, 0, "csub=score clamp must hold MAPQ at 0 for read1");
+        assert_eq!(m2, 0, "csub=score clamp must hold MAPQ at 0 for read2");
+    }
+
     #[test]
     fn region_se_mapq_reproduces_primary_mapq() {
         let body = "ACGTACGATCGATCGGATTCCAGTCAGTCAGGATCCATGCATGCATTAGCATCGATCGTA";
@@ -2858,7 +2979,8 @@ mod tests {
 
         if ar.flag & 0x4 == 0 {
             assert!(!rr.regions.is_empty());
-            let recomputed = aligner.region_se_mapq(&rr.regions[0], rr.sub, rr.sub_n, rr.frac_rep);
+            let recomputed =
+                aligner.region_se_mapq(&rr.regions[0], rr.sub, rr.sub_n, rr.frac_rep, rr.csub);
             assert_eq!(
                 recomputed, ar.mapq,
                 "region_se_mapq on primary region must reproduce align_read mapq"

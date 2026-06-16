@@ -46,8 +46,10 @@ impl ParallelAligner {
         sub: i32,
         sub_n: u32,
         frac_rep: f32,
+        csub: i32,
     ) -> u8 {
-        self.inner.region_se_mapq(region, sub, sub_n, frac_rep)
+        self.inner
+            .region_se_mapq(region, sub, sub_n, frac_rep, csub)
     }
 
     pub fn pair_margin(&self) -> i32 {
