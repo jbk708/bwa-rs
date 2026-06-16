@@ -278,9 +278,16 @@ fn combine_se_pe(q_se: i32, q_pe: i32) -> i32 {
 /// Port of bwa `mem_sam_pe`'s paired-MAPQ recompute for a chosen pair. `choice`
 /// comes from [`mem_pair`], `score_un` is the unpaired alternative
 /// `score1 + score2 - PEN_UNPAIRED`, `q_se1`/`q_se2` are each selected region's
-/// single-end MAPQ, and `frac_rep1`/`frac_rep2` their repeat fractions. Returns the
-/// adjusted (mapq1, mapq2). The `csub`-clamp bwa applies afterward is omitted (bwa-rs
-/// regions carry no per-region csub).
+/// single-end MAPQ (already incorporating `csub` via `approx_mapq_se`),
+/// `frac_rep1`/`frac_rep2` their repeat fractions, `csub1`/`csub2` the per-read
+/// tandem-hit scores, and `score1`/`score2` the primary SW scores. Returns the
+/// adjusted (mapq1, mapq2).
+///
+/// After SE↔PE reconciliation bwa applies a csub ceiling:
+/// `q_se[i] = min(q_se[i], raw_mapq(score[i] − csub[i], a))`
+/// which prevents the paired-MAPQ lift from exceeding what the tandem gap supports.
+/// When `csub` is 0 the ceiling is `raw_mapq(score, a)` — effectively unbounded.
+#[allow(clippy::too_many_arguments)]
 pub fn paired_mapq(
     choice: &PairChoice,
     score_un: i32,
@@ -289,6 +296,10 @@ pub fn paired_mapq(
     frac_rep1: f32,
     frac_rep2: f32,
     match_score: i32,
+    csub1: i32,
+    csub2: i32,
+    score1: i32,
+    score2: i32,
 ) -> (u8, u8) {
     let subo = choice.subo.max(score_un);
     let mut q_pe = raw_mapq(choice.score - subo, match_score);
@@ -297,10 +308,13 @@ pub fn paired_mapq(
     }
     let q_pe = q_pe.clamp(0, 60);
     let q_pe = (q_pe as f64 * (1.0 - 0.5 * (frac_rep1 + frac_rep2) as f64) + 0.499) as i32;
-    (
-        combine_se_pe(q_se1 as i32, q_pe) as u8,
-        combine_se_pe(q_se2 as i32, q_pe) as u8,
-    )
+    // bwa mem_sam_pe csub ceiling (applied after SE↔PE reconciliation):
+    //   q_se[i] = min(q_se[i], raw_mapq(score[i] − csub[i], a))
+    let ceil1 = raw_mapq(score1 - csub1, match_score);
+    let ceil2 = raw_mapq(score2 - csub2, match_score);
+    let m1 = combine_se_pe(q_se1 as i32, q_pe).min(ceil1).max(0) as u8;
+    let m2 = combine_se_pe(q_se2 as i32, q_pe).min(ceil2).max(0) as u8;
+    (m1, m2)
 }
 
 pub fn pair_reads(
@@ -656,7 +670,9 @@ mod tests {
         let r2 = scored_read(350, 150, true, 150, 60, 0.0);
         let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
         let score_un = r1.score + r2.score - PEN_UNPAIRED;
-        let (m1, m2) = paired_mapq(&choice, score_un, 60, 60, 0.0, 0.0, 1);
+        let (m1, m2) = paired_mapq(
+            &choice, score_un, 60, 60, 0.0, 0.0, 1, 0, 0, r1.score, r2.score,
+        );
         assert_eq!(m1, 60, "high unique pair: read1 mapq stays 60");
         assert_eq!(m2, 60, "high unique pair: read2 mapq stays 60");
     }
@@ -669,7 +685,9 @@ mod tests {
         let r2 = scored_read(350, 150, true, 200, 27, 0.0);
         let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
         let score_un = r1.score + r2.score - PEN_UNPAIRED;
-        let (_, m2) = paired_mapq(&choice, score_un, 60, 27, 0.0, 0.0, 1);
+        let (_, m2) = paired_mapq(
+            &choice, score_un, 60, 27, 0.0, 0.0, 1, 0, 0, r1.score, r2.score,
+        );
         assert!(
             m2 > 27,
             "paired evidence should raise low-SE mate: got {m2}"
@@ -696,8 +714,32 @@ mod tests {
         // Single-pairing case
         let choice_single = mem_pair(&[r1a.clone()], &[r2a.clone()], &dist, 1, 5).unwrap();
         let score_un = r1a.score + r2a.score - PEN_UNPAIRED;
-        let (m_multi, _) = paired_mapq(&choice_multi, score_un, 40, 40, 0.0, 0.0, 1);
-        let (m_single, _) = paired_mapq(&choice_single, score_un, 40, 40, 0.0, 0.0, 1);
+        let (m_multi, _) = paired_mapq(
+            &choice_multi,
+            score_un,
+            40,
+            40,
+            0.0,
+            0.0,
+            1,
+            0,
+            0,
+            r1a.score,
+            r2a.score,
+        );
+        let (m_single, _) = paired_mapq(
+            &choice_single,
+            score_un,
+            40,
+            40,
+            0.0,
+            0.0,
+            1,
+            0,
+            0,
+            r1a.score,
+            r2a.score,
+        );
         assert!(
             m_multi <= m_single,
             "more pairings (n_sub>0) should not raise mapq: multi={m_multi}, single={m_single}"
@@ -712,8 +754,12 @@ mod tests {
         let r2 = scored_read(350, 150, true, 200, 5, 0.0);
         let choice = mem_pair(&[r1.clone()], &[r2.clone()], &dist, 1, 5).unwrap();
         let score_un = r1.score + r2.score - PEN_UNPAIRED;
-        let (m_clean, _) = paired_mapq(&choice, score_un, 5, 5, 0.0, 0.0, 1);
-        let (m_rep, _) = paired_mapq(&choice, score_un, 5, 5, 0.8, 0.8, 1);
+        let (m_clean, _) = paired_mapq(
+            &choice, score_un, 5, 5, 0.0, 0.0, 1, 0, 0, r1.score, r2.score,
+        );
+        let (m_rep, _) = paired_mapq(
+            &choice, score_un, 5, 5, 0.8, 0.8, 1, 0, 0, r1.score, r2.score,
+        );
         assert!(
             m_rep < m_clean,
             "high frac_rep should lower mapq: rep={m_rep}, clean={m_clean}"

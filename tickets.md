@@ -1257,3 +1257,74 @@ its findings. The `uniq` set remains the zero-regression gate throughout.
   opposite-strand secondary bwa grades marginally higher; net strongly positive).
 - **Dependencies:** **T-029** (region arrays); re-scoped by **T-028** and the
   T-030/T-031 outcome.
+
+### T-033: Missing `csub` clamp inflates MAPQ on overlapping-alignment reads
+- **Status:** FIXED (branch `t033-frac-rep-mapq`, PR opened).
+- **Measured (T-032 → T-033):** MAPQ-divergent 1377 → 1314 (−63); over-scorers 998 → 914
+  (−84, −8.4%); under-scorers 379 → 400 (+21); mean |dMAPQ| 20.66 → 19.99;
+  B3 over-scorers 529 → 520 (−9); B3 under-scorers 180 → 188 (+8).
+  Uniq regression: **zero** (T-032 and T-033 uniq SAMs show identical 2 MAPQ divergences,
+  cols 1–10 byte-identical to T-032 baseline).
+  Note: the 131 B3 reads with identical `AS`/`XS` but higher MAPQ are **not** fixed by
+  this approach; their `csub` in bwa originates from `mem_matesw` rescue-SW `aln.score2`
+  (second-best score in the mate-rescue window), not from candidate placement reference
+  overlap — that requires a separate ticket to thread rescue-SW second-best through
+  `rescue_mate`.
+- **Severity:** medium-high (25% of the post-T-032 B3 over-scoring residual).
+- **Affected field(s):** MAPQ only.
+- **Symptom:** Among the **529 B3 over-scorers** remaining after T-032 (POS+CIGAR
+  agree, bwa-rs MAPQ > bwa-mem2), **131 have byte-identical `AS:i:` *and* `XS:i:` to
+  bwa-mem2 yet a higher MAPQ.** Worked example `SRR7733443.81#64` (`95M56S`):
+  `AS=90 XS=85` in both tools, but bwa-mem2 MAPQ **6** vs bwa-rs **18**.
+- **Diagnosis (scoping pass + sonnet verification against upstream source):** the 529
+  over-scorers break down as — secondary-discovery gap **246** (bwa finds a stronger/any
+  inexact secondary: 193 with bwa `XS` higher, 53 with bwa-rs `sub=0`) → deferred to
+  **T-034**; **MAPQ-input divergence 131** (this ticket); primary-score/extension
+  divergence 108; bwa-rs `XS` higher 44. For the 131: `approx_mapq_se`
+  (`src/alignment.rs:994`) is a **faithful** port of bwa's `mem_approx_mapq_se`,
+  `aligned_span` (`l = max(qe−qb, re−rb)`, `src/alignment.rs:1068`) is correct, and
+  `DEFAULT_MAX_OCC = 500` matches bwa's `opt->max_occ`. **`frac_rep` was ruled out**:
+  bwa-mem2's seeder (`FMI_search::getSMEMsOnePosOneThread`) guards
+  `(interval_len) >= minSeedLen` before storing a seed, so the telomeric-repeat
+  breakpoint intervals here (length 9 < 19) never register as repetitive in *either*
+  tool ⇒ `frac_rep = 0` on both sides (forcing it up would crater unique-read MAPQ
+  60 → ~3). The actual divergent input is **`csub`**.
+- **Cause:** bwa's `mem_approx_mapq_se` lower-bounds the suboptimal score with `csub`:
+  `sub = a->sub ? a->sub : min_seed_len*a;  sub = a->csub > sub ? a->csub : sub;`
+  `csub` = the best score among alignments that **overlap the primary's reference span**
+  (a near-tied *overlapping* alignment that `XS`/`sub`, which tracks the best distinct
+  secondary, does not capture). bwa-rs models `csub` as **0** — explicitly noted at
+  `src/alignment.rs:1013` ("csub is not modeled (treated as 0)") and at
+  `src/paired.rs:282–283` ("the csub-clamp bwa applies afterward is omitted"). Back-calc
+  matches the SAM exactly: read `81` (score 90, `XS`=85, `sub_n`=1, `l`=95) →
+  bwa-rs sub=85 ⇒ MAPQ 18; bwa-mem2 csub=88 ⇒ sub=88 ⇒ MAPQ 6. The 86-read `AS=XS`
+  paired group (bwa-rs MAPQ 2 vs bwa-mem2 0) is the same omission on the **paired**
+  MAPQ-clamp side (`paired.rs:282`).
+- **Plan:**
+  1. **Tests first:** unit test on a synthetic case with a third alignment overlapping
+     the primary's reference span at a score *between* primary and `XS`; assert `csub`
+     captures it and MAPQ drops. Add the paired-side case pinning `AS=XS ⇒ MAPQ 0`.
+  2. **Implement:** after primary/secondary marking, compute per-primary `csub` = max SW
+     score among candidate regions overlapping the primary's **reference** span (exclude
+     the primary itself / its own re-derivations), thread it into `approx_mapq_se` and
+     apply `sub = sub.max(csub)` before the formula (the `src/alignment.rs:1013` site).
+     Apply the matching csub-clamp on the paired path (`src/paired.rs:282`). **MAPQ-only —
+     placement and the primary region must not move** (the T-032 byte-identity invariant);
+     `csub` only ever raises `sub` ⇒ only ever lowers MAPQ. Do **not** touch the
+     secondary-discovery path (that is T-034).
+  3. **Simplify + measure:** `cargo clippy --fix` then `cargo clippy -- -D warnings`
+     clean, `cargo fmt --check`, full `cargo test`. Re-run `bench/compare.sh
+     bench/bwars_2n_2k_t033.sam bench/bwamem2_2k.sam` and the bucket script; gate on
+     **zero uniq regression** (uniq cols 1–10 byte-identical to the T-032 baseline) and
+     report the B3 over-scorer / mean-|dMAPQ| deltas. Watch the under-scorer counter
+     (T-032 left it at 180) does not over-correct past the gain.
+  4. **Cleanup:** remove the scoping-pass diagnostic scaffolding (`BWA_RS_DUMP_FRACREP`
+     in `src/alignment.rs`; `diag_telomere_occ_counts`/`diag_telomere_occ_fine`/
+     `diag_unique_read_occ` `#[ignore]` tests in `tests/integration.rs`).
+- **Deliverables:**
+  - [x] Per-read root-cause note (`bench/compare_t033*.md`)
+  - [x] `csub` computed + threaded into SE and paired MAPQ (`src/alignment.rs`, `src/paired.rs`)
+  - [x] Unit test(s) for the overlapping-alignment `csub` case (SE + paired)
+  - [x] Bench measurement: zero uniq regression, B3 over-scorer reduction
+- **Dependencies:** **T-032** (defines the B3 residual). Sibling of **T-034**
+  (richer inexact-secondary seeding — the other 246 over-scorers).
